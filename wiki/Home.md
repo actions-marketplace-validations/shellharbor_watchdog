@@ -29,6 +29,7 @@ and threshold before scheduling a production run.
 ## Start here
 
 - [Quick Start](Quick-Start.md) — install, validate, run, and schedule a first check.
+- [Python Package](Python-Package.md) — pip installation, Python/module launchers, build tests, and manual Trusted Publishing.
 - [Configuration Reference](Configuration-Reference.md) — settings, templates, conditions, and safe command syntax.
 - [Checks and Security Monitoring](Checks-and-Security.md) — HTTP, TCP, commands, disk capacity, TLS certificate expiry, ClamAV, and event thresholds.
 - [Notifications and Remediation](Notifications-and-Remediation.md) — email, Telegram, Discord, Slack, ntfy, hooks, and recovery actions.

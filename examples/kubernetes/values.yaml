@@ -2,7 +2,7 @@
 # the endpoint and select suitable persistent storage before enabling it.
 image:
   repository: ghcr.io/shellharbor/watchdog
-  tag: "1.7.8"
+  tag: "1.7.9"
   # Prefer an immutable digest in production after verifying the published image.
   digest: ""
 

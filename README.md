@@ -4,6 +4,7 @@
 
 [![CI](https://github.com/shellharbor/watchdog/actions/workflows/ci.yml/badge.svg)](https://github.com/shellharbor/watchdog/actions/workflows/ci.yml)
 [![Kubernetes](https://github.com/shellharbor/watchdog/actions/workflows/kubernetes.yml/badge.svg)](https://github.com/shellharbor/watchdog/actions/workflows/kubernetes.yml)
+[![Docker Hub](https://img.shields.io/docker/pulls/shellharbor/watchdog?logo=docker&logoColor=white&label=Docker%20Hub&color=2496ED)](https://hub.docker.com/r/shellharbor/watchdog)
 [![CodeQL](https://github.com/shellharbor/watchdog/actions/workflows/codeql.yml/badge.svg)](https://github.com/shellharbor/watchdog/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/shellharbor/watchdog/badge)](https://scorecard.dev/viewer/?uri=github.com/shellharbor/watchdog)
 [![GitHub release](https://img.shields.io/github/v/release/shellharbor/watchdog)](https://github.com/shellharbor/watchdog/releases)
@@ -31,6 +32,8 @@ For task-oriented guides and additional runnable examples, see the
 - [Support guide](SUPPORT.md) — documentation, issues, and safe troubleshooting
 - [Release guide](RELEASING.md) — verified version and release workflow
 - [Changelog](CHANGELOG.md) — user-visible release history
+- [OpenSSF Scorecard audit](docs/scorecard-audit.md) — verified findings, CI hardening, and remaining maintainer actions
+- [Fuzzing and release signatures](docs/fuzzing-and-release-signatures.md) — mutation targets, crash replay, and verification before installation
 
 ## Features
 
@@ -85,14 +88,14 @@ yq --version  # Must report Mike Farah yq version v4.x.x
 
 ## Quick start
 
-Download the stable `v1.7.8` source archive from GitHub:
+Download the stable `v1.7.9` source archive from GitHub:
 
 ```bash
 curl -fL \
-  https://github.com/shellharbor/watchdog/archive/refs/tags/v1.7.8.zip \
+  https://github.com/shellharbor/watchdog/archive/refs/tags/v1.7.9.zip \
   -o watchdog.zip
 unzip watchdog.zip
-cd watchdog-1.7.8
+cd watchdog-1.7.9
 ```
 
 Alternatively, clone the repository with Git:
@@ -118,6 +121,40 @@ Or run `sudo ./install.sh` to verify dependencies, install the script and
 example configuration, create runtime directories, install the systemd units,
 and reload systemd. The installer preserves an existing configuration.
 
+## Run Watchdog with Python / pip
+
+The optional **`shellharbor-watchdog`** Python distribution runs the same Bash
+engine, not a rewritten monitor. It requires Python 3.11+ on Linux (including
+WSL), Bash 4.3+, Mike Farah yq v4, curl, flock, and GNU coreutils. Native
+installation, systemd, Docker, and Kubernetes do not gain a Python dependency.
+
+Install from this checkout before its first PyPI publication:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/python -m shellharbor_watchdog --version
+.venv/bin/python -m shellharbor_watchdog validate -c /etc/watchdog/config.yaml
+.venv/bin/shellharbor-watchdog status -c /etc/watchdog/config.yaml --json
+.venv/bin/shellharbor-watchdog-discover --help
+```
+
+After publication, replace `pip install .` with
+`pip install shellharbor-watchdog`. Do **not** install the unrelated `watchdog`
+filesystem-event package. This repository's package is not published by
+building it locally or creating a GitHub release.
+
+The Python launchers forward the existing CLI arguments literally and replace
+themselves with Bash, retaining signals, standard streams, and exit codes
+`0` / `1` / `2`. Set `WATCHDOG_CONFIG` or pass `-c`; otherwise they look for
+`config.yaml` in the caller's current directory. They never write configuration
+or state into the installed package, install OS dependencies, or create a timer.
+Use an explicit config and absolute launcher path in a scheduler.
+
+See the [Python package guide](wiki/Python-Package.md) for installation,
+examples, tests, and manual TestPyPI/PyPI Trusted Publishing. A safe first
+configuration is available in [`examples/python-package.yaml`](examples/python-package.yaml).
+
 ## Run Watchdog in Docker
 
 Docker is an additional deployment option, not a replacement for the native
@@ -127,10 +164,14 @@ single-file, cron, or systemd installation. The production image is built from
 Action described below.
 
 Release images are published to GitHub Container Registry as
-`ghcr.io/shellharbor/watchdog`. Pin a complete release tag in production:
+`ghcr.io/shellharbor/watchdog`. The official Docker Hub mirror is
+[`shellharbor/watchdog`](https://hub.docker.com/r/shellharbor/watchdog).
+Pin a complete release tag in production:
 
 ```bash
 docker pull ghcr.io/shellharbor/watchdog:<version>
+# Or pull the same image from Docker Hub.
+docker pull shellharbor/watchdog:<version>
 docker build --file packaging/docker/Dockerfile --target runtime \
   --tag watchdog:local .
 ```
@@ -1975,6 +2016,57 @@ enforce after reviewing actions.
 
 ## Testing
 
+The Python launcher has dependency-free unit tests. The **Python package**
+workflow runs them on Python 3.11 and 3.12, then builds and checks both wheel
+and sdist on Linux / Python 3.12:
+
+```bash
+python3 tests/python_launcher.py
+python3 -m venv .venv-package
+.venv-package/bin/python -m pip install --require-hashes --only-binary=:all: \
+  -r .github/requirements-packaging.txt
+.venv-package/bin/python -m build --no-isolation
+.venv-package/bin/python -m twine check --strict dist/*
+.venv-package/bin/python tests/python_package.py
+```
+
+The install tests use isolated virtual environments, rebuild the wheel from
+the standalone sdist, compare bundled files with the repository, and exercise
+actual validation/checks, default config lookup, literal argv, signals, and
+exit codes without requiring PyPI access. They need the ordinary Linux runtime
+dependencies. The packaging lock is CI-only and does not add Python runtime
+dependencies to the package.
+
+CI-only Python dependencies are version- and hash-locked in
+[`.github/requirements-ci.txt`](.github/requirements-ci.txt) for CPython 3.12
+on Linux x86_64. Install them in an isolated environment before Python tests:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --require-hashes --only-binary=:all: -r .github/requirements-ci.txt
+.venv/bin/python tests/supply_chain.py
+```
+
+The supply-chain test runs in CI alongside the authoritative Bash suite. It
+protects immutable dependency references, job token permissions, checkout
+credentials, and checksum failure behavior. See the
+[Scorecard audit](docs/scorecard-audit.md) for the public report and its limits.
+
+The separate `Fuzzing` workflow runs genuine ClusterFuzzLite/Atheris mutations
+against configuration validation and JSON/HTML/Prometheus string handling.
+Deterministic seeds and release boundary checks run in ordinary CI:
+
+```bash
+python3 tests/fuzzing.py
+python3 tests/release_artifacts.py
+python3 tests/cosign_offline.py # Requires Cosign 3.1.3; disposable keys only.
+```
+
+New releases that include the signing workflow upload a deterministic source
+archive, checksums, and keyless Sigstore bundles. Verify their exact GitHub
+workflow/tag identity before installing; see the
+[fuzzing and signature guide](docs/fuzzing-and-release-signatures.md).
+
 ```bash
 bash ./scripts/build-watchdog.sh --check
 bash -n service-watchdog.sh watchdog-discover.sh install.sh scripts/build-watchdog.sh lib/watchdog/*.sh tests/*.sh
@@ -1988,7 +2080,7 @@ python3 ./tests/kubernetes_chart.py
 python3 ./tests/kubernetes_integration.py
 ```
 
-`tests/run-all.sh` is the authoritative regression inventory. It fails if a
+`tests/run-all.sh` is the authoritative Bash regression inventory. It fails if a
 new test script is not registered, then runs every listed scenario in a
 deterministic order. GitHub Actions runs this same suite on pushes and pull
 requests. The schema test requires Mike Farah `yq` v4 and Python's `jsonschema`

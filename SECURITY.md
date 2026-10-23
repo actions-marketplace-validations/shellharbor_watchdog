@@ -9,7 +9,7 @@ or state handling are handled privately.
 
 | Version | Supported |
 | --- | --- |
-| Latest `1.1.x` release | Yes |
+| Latest release recorded in `VERSION` | Yes |
 | Earlier releases | No |
 
 Please upgrade to the latest release before reporting an issue that may already

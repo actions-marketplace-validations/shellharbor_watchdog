@@ -1,0 +1,9 @@
+# This build needs modules and its harness, but no local AI instructions/tools.
+**
+!service-watchdog.sh
+!VERSION
+!lib
+!lib/watchdog
+!lib/watchdog/*.sh
+!.clusterfuzzlite
+!.clusterfuzzlite/**
