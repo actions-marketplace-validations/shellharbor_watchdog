@@ -11,6 +11,7 @@ service names, and commands before enabling scheduled runs.
 | [`http-mtls-proxy.yaml`](http-mtls-proxy.yaml) | Check a private HTTP endpoint through an authenticated proxy with mTLS |
 | [`tcp-systemd.yaml`](tcp-systemd.yaml) | Check a TCP port and restart a systemd unit |
 | [`command-check.yaml`](command-check.yaml) | Use a local command as the health check |
+| [`python-package.yaml`](python-package.yaml) | Validate or smoke-test the pip-installed Python launcher without network calls or remediation |
 | [`disk-space.yaml`](disk-space.yaml) | Alert through email and webhooks when a filesystem runs low on free space |
 | [`dns-ping.yaml`](dns-ping.yaml) | Verify authoritative DNS answers and ICMP packet loss/latency |
 | [`tls-certificate.yaml`](tls-certificate.yaml) | Alert before a TLS leaf certificate expires, with optional SNI and port |

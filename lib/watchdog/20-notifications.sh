@@ -243,7 +243,7 @@ escape_html() {
 }
 
 escape_json() {
-    local value="$1"
+    local value="$1" code character escaped
     value="${value//\\/\\\\}"
     value="${value//\"/\\\"}"
     value="${value//$'\t'/\\t}"
@@ -252,6 +252,16 @@ escape_json() {
     value="${value//$'\b'/\\b}"
     value="${value//$'\f'/\\f}"
     value="${value//$'\v'/\\u000b}"
+    # JSON forbids every unescaped byte below U+0020, not only whitespace.
+    # NUL is not representable in a Bash string; preserve all other controls.
+    if [[ "$value" == *[[:cntrl:]]* ]]; then
+        for ((code = 1; code < 32; code++)); do
+            printf -v character '\\%03o' "$code"
+            printf -v character '%b' "$character"
+            printf -v escaped '\\u%04x' "$code"
+            value="${value//"$character"/"$escaped"}"
+        done
+    fi
     printf '%s' "$value"
 }
 

@@ -78,7 +78,8 @@ class ChartContract(unittest.TestCase):
         container = pod["containers"][0]
         self.assertNotIn("command", container)
         self.assertNotIn("args", container)
-        self.assertTrue(container["image"].endswith(":1.7.8"))
+        version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        self.assertTrue(container["image"].endswith(":" + version))
         self.assertTrue(container["securityContext"]["readOnlyRootFilesystem"])
         self.assertFalse(container["securityContext"]["allowPrivilegeEscalation"])
         self.assertEqual(container["securityContext"]["capabilities"]["drop"], ["ALL"])

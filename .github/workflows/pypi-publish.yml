@@ -1,0 +1,95 @@
+name: Publish Python package
+
+# Publishing is an explicit operator action, never a side effect of a push/release.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag containing the Python package
+        required: true
+        type: string
+      repository:
+        description: Package index (configure its Trusted Publisher first)
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-publish-${{ inputs.repository }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'shellharbor/watchdog'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Verify exact release tag and metadata
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$(git rev-parse HEAD)" == "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" ]]
+          bash scripts/release-preflight.sh "$RELEASE_TAG"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Install hash-locked packaging tools
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r .github/requirements-packaging.txt
+          python -m pip check
+      - name: Install verified yq for runtime tests
+        env:
+          YQ_SHA256: 1bb99e1019e23de33c7e6afc23e93dad72aad6cf2cb03c797f068ea79814ddb0
+        run: |
+          set -euo pipefail
+          yq_binary="$(mktemp "${RUNNER_TEMP}/watchdog-python-yq.XXXXXX")"
+          trap 'rm -f -- "$yq_binary"' EXIT
+          curl --fail --silent --show-error --location \
+            https://github.com/mikefarah/yq/releases/download/v4.47.2/yq_linux_amd64 \
+            --output "$yq_binary"
+          printf '%s  %s\n' "$YQ_SHA256" "$yq_binary" | sha256sum --check -
+          sudo install -m 0755 "$yq_binary" /usr/local/bin/yq
+      - name: Build and verify distributions without publishing credentials
+        run: |
+          python tests/python_launcher.py
+          python -m build --no-isolation
+          python -m twine check --strict dist/*
+          python tests/python_package.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python-distributions
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: github.repository == 'shellharbor/watchdog'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: ${{ inputs.repository }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python-distributions
+          path: dist/
+      - name: Publish with PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          repository-url: ${{ inputs.repository == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          packages-dir: dist/
+          attestations: true

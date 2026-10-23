@@ -228,7 +228,7 @@ die() {
 }
 
 # Invoked indirectly by the EXIT trap.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 cleanup() {
     if [[ -n "${TEMP_DIRECTORY:-}" && -d "$TEMP_DIRECTORY" ]]; then
         rm -rf -- "$TEMP_DIRECTORY"

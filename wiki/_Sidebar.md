@@ -1,5 +1,6 @@
 - [Home](Home.md)
 - [Quick Start](Quick-Start.md)
+- [Python Package](Python-Package.md)
 - [Configuration Reference](Configuration-Reference.md)
 - [Checks and Security Monitoring](Checks-and-Security.md)
 - [Notifications and Remediation](Notifications-and-Remediation.md)

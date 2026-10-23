@@ -1,11 +1,113 @@
 # Changelog
 
-All notable changes to this project are documented in this file.
+After every task with file changes, briefly record what changed and why: features, fixes, internal work, dependencies, documentation, and AI-KIT. Keep new entries under `Unreleased` until a release is confirmed; use verified dates and versions. Tasks without file changes need no entry.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## Unreleased
 
-## [Unreleased]
+### Added
+
+- Optional `shellharbor-watchdog` Python 3.11+ package with monitor and discovery
+  console/module entrypoints. It bundles the existing Bash runtime, forwards
+  literal argv through process replacement, retains signals/exit codes, and
+  defaults Python config lookup to the caller's `config.yaml` without writing
+  to site-packages or changing native/container dependencies.
+- Hatchling wheel/sdist builds using the root `VERSION`, explicit package
+  resources and source-archive allowlists, hash-locked build tools, clean-install
+  and reproducible-rebuild tests, Python 3.11/3.12 launcher CI, and a separate
+  manual-only TestPyPI/PyPI Trusted Publishing workflow. No registry upload is
+  performed automatically on pushes or GitHub releases.
+
+### Changed
+
+- Replaced obsolete required Go check contexts on `main` with the actual Bash
+  regression/lint, Python 3.11/3.12 launcher, wheel/sdist installation, and
+  GitHub Actions CodeQL checks, bound to the GitHub Actions integration.
+  Preserved the required PR approval and every other existing ruleset setting
+  so publication can proceed without bypassing review protection.
+- Registered and verified the TestPyPI pending Trusted Publisher bound to
+  `shellharbor/watchdog`, `pypi-publish.yml`, and `testpypi`. Recorded the
+  remaining publication prerequisites and the mismatch between required
+  main-branch status contexts and the actual Bash/Python CI; no package upload
+  or branch-protection change was performed.
+- Configured separate GitHub `testpypi` and `pypi` environments restricted to
+  `main`, with explicit owner approval for production. Clarified the distinction
+  between the workflow execution branch and the immutable release-tag input to
+  avoid deployment-policy failures. Production publisher registration and
+  distribution uploads remain separate, uncompleted steps.
+- Extended dependency-update and supply-chain checks to the Python backend,
+  packaging lock, and least-privilege publisher. Added a safe example and Python
+  package Wiki guide; synchronized README, release instructions, project skills,
+  local context/navigation, and the architecture decision for the new surface.
+
+### AI-KIT
+
+- 2026-10-05: separated the language policy: all authored project files and artifacts remain English, while chat with the user uses Russian for questions, plans, progress, explanations, review summaries, and final reports. Project artifacts shown in chat retain English. Synchronized instructions, bootstrap, context, continuity skill, engineering/router rules, README, wiki, and decision log to preserve this distinction.
+- 2026-10-05: replaced the former Terra-based defaults with the user's Adaptive Model Router: Luna for bounded tasks, Sol 6.1 for engineering, and justified Astra escalation. Optimizes total cost to a correct result rather than the price of one call.
+- 2026-10-05: added runtime capability verification, independent reasoning/service-tier/context decisions, standard/pro criteria, the large-input pricing boundary, cache/output budgets, conditional reviewers/delegation, diagnosed retries, and compact JSON router decisions. Distinguished policy fields from supported execution controls.
+- 2026-10-05: synchronized bootstrap, agent/review rules, context and continuity skill, intent, navigation, and README; recorded the routing decision and consequences in a kit ADR. Runtime availability and switching remain explicitly unverified until project adaptation.
+- v0.1: added agent instructions, context, a skill, stack and engineering rules, model routing, and the bootstrap prompt.
+- Summarized the available voice context; added thin adapters, the skill registry, and stack skills; recovered the user's Laravel agreements from the earlier AI-Kit task.
+- Added a Docker daemon check and a request for the user to start it for container-dependent tasks.
+- Added a universal `.gitignore` for PHP/Laravel/Moodle/Go, development artifacts, secrets, and local AI-KIT files.
+- Added local Go cache directories and `*.out` files to `.gitignore`.
+- Clarified the `composer.lock` policy: versioned by default for applications, with an optional exclusion for libraries.
+- Clarified that `go.mod` and `go.sum` remain versioned for Go modules.
+- Added Python script rules and a skill; `.gitignore` excludes virtual environments, caches, coverage output, and build artifacts while keeping configuration and lockfiles versioned.
+- Made `CHANGELOG.md` updates mandatory after every task with file changes to preserve the history of reasons and results, including internal changes and the kit itself.
+- Added a mandatory Kubernetes-ready standard for new Dockerfiles, containers, and microservices: portable images, configuration, security, shutdown, health checks, storage, and minimal manifests. Integrated the rule into instructions, context, the skill, and bootstrap so services are ready for Kubernetes from the start.
+- 2026-10-04: translated all AI-KIT documents, adapters, rules, templates, and the bootstrap prompt into English; established English as the language for future kit updates.
+- 2026-10-04: extended the English language requirement to all authored project content and agent communication, including code, UI text, logs, Git messages, reviews, and reports, so future project work follows one language policy.
+
+## [1.7.9] - 2026-10-15
+
+### Added
+
+- ClusterFuzzLite/Atheris mutation fuzzing for configuration validation and
+  JSON, HTML, and Prometheus serialization boundaries. Includes a compiled
+  standalone target, seed corpus, bounded execution, scheduled/PR checks, and
+  deterministic regression tests.
+- Deterministic tagged-source `watchdog-X.Y.Z.tar.gz` release archives,
+  `SHA256SUMS`, and keyless Cosign/Sigstore signature bundles through GitHub
+  OIDC. Signatures are verified against the exact release workflow/tag identity
+  and issuer before upload. Reruns preserve valid existing assets and repair
+  missing uploads without overwriting files.
+- Supply-chain regression checks, offline signature/tampering tests, an
+  evidence-based OpenSSF Scorecard audit, and fuzzing/signature verification
+  documentation.
+
+### Security
+
+- Pinned GitHub Actions and the Bash compatibility image to immutable
+  revisions; hash-locked CI Python dependencies and verified yq downloads
+  before installation.
+- Disabled persisted checkout credentials and narrowed workflow token
+  permissions. Signing write permissions are limited to the release-signing
+  job.
+- Expanded Dependabot coverage to CI Python dependencies and all three
+  Dockerfile locations. Updated the security policy to identify the current
+  supported release through `VERSION`.
+
+### Fixed
+
+- Escaped uncommon JSON control characters below U+0020, fixing a defect
+  exposed by fuzzing while preserving existing serialization behavior.
+- Restored published changelog history alongside existing local AI-KIT notes
+  so release metadata checks retain their version headings.
+- Made the Helm default-image regression test derive its expected tag from
+  `VERSION` instead of a stale hard-coded release.
+
+### Changed
+
+- Synchronized CLI release metadata, README archive instructions, deployment
+  examples, and Helm chart `0.1.1` (`appVersion: 1.7.9`) for this release.
+- Updated release preparation guidance and verified local project context and
+  continuity skill. Signing is enabled for new releases containing the workflow;
+  existing tags and assets are not retroactively replaced.
+- Verified the freshly built v1.7.9 amd64 runtime in an isolated kind 0.30.0 /
+  Kubernetes 1.34.0 cluster before publication: finite CronJob success,
+  persistent PVC state, no Docker socket access, and invalid-config exit 2.
+  Rechecked strict Helm lint and all six chart contract tests; recorded the
+  result in local project context and removed the test cluster.
 
 ## [1.7.8] - 2026-10-04
 
@@ -277,7 +379,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Quick Start now uses the stable `v1.0.3` source archive.
 - Expanded repository ignore rules and troubleshooting documentation.
 
-[Unreleased]: https://github.com/shellharbor/watchdog/compare/v1.7.8...HEAD
+[Unreleased]: https://github.com/shellharbor/watchdog/compare/v1.7.9...HEAD
+[1.7.9]: https://github.com/shellharbor/watchdog/compare/v1.7.8...v1.7.9
 [1.7.8]: https://github.com/shellharbor/watchdog/compare/v1.7.6...v1.7.8
 [1.7.6]: https://github.com/shellharbor/watchdog/compare/v1.7.5...v1.7.6
 [1.7.5]: https://github.com/shellharbor/watchdog/compare/v1.7.4...v1.7.5

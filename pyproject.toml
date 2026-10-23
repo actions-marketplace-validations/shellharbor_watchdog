@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "shellharbor-watchdog"
+dynamic = ["version"]
+description = "Python launcher for ShellHarbor's one-shot Bash service monitor"
+readme = "packaging/python/README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Igor Sazonov", email = "sovletig@gmail.com"}]
+keywords = ["monitoring", "bash", "healthcheck", "devops", "watchdog"]
+classifiers = [
+  "Environment :: Console",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: System :: Monitoring",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/shellharbor/watchdog"
+Documentation = "https://github.com/shellharbor/watchdog/tree/main/wiki"
+Issues = "https://github.com/shellharbor/watchdog/issues"
+Source = "https://github.com/shellharbor/watchdog"
+Changelog = "https://github.com/shellharbor/watchdog/blob/main/CHANGELOG.md"
+
+[project.scripts]
+shellharbor-watchdog = "shellharbor_watchdog.cli:main"
+shellharbor-watchdog-discover = "shellharbor_watchdog.discover:main"
+
+[tool.hatch.version]
+path = "VERSION"
+pattern = '^(?P<version>[0-9]+\.[0-9]+\.[0-9]+)\s*$'
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shellharbor_watchdog"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"service-watchdog.sh" = "shellharbor_watchdog/_runtime/service-watchdog.sh"
+"watchdog-discover.sh" = "shellharbor_watchdog/_runtime/watchdog-discover.sh"
+"VERSION" = "shellharbor_watchdog/_runtime/VERSION"
+"config.example.yaml" = "shellharbor_watchdog/_runtime/config.example.yaml"
+"schema/watchdog.schema.json" = "shellharbor_watchdog/_runtime/schema/watchdog.schema.json"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src/shellharbor_watchdog",
+  "/pyproject.toml",
+  "/VERSION",
+  "/LICENSE",
+  "/packaging/python/README.md",
+  "/service-watchdog.sh",
+  "/watchdog-discover.sh",
+  "/config.example.yaml",
+  "/schema/watchdog.schema.json",
+]

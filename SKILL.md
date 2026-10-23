@@ -17,6 +17,15 @@ projects.
   it with `scripts/build-watchdog.sh --check`. The released/installed script
   remains self-contained and never sources modules at runtime.
   `watchdog-discover.sh` is a separate offline generator.
+- `shellharbor-watchdog` is the optional Python 3.11+ distribution, implemented
+  under `src/shellharbor_watchdog/` with `pyproject.toml`. Keep it Linux-only,
+  dependency-free at Python runtime, and a literal-argv `execve` launcher for
+  the bundled monitor/discovery scripts. Never replace it with a downloaded
+  script, shell command string, extra supervisor, or automatic OS installer.
+  Bundle original files and read the version from root `VERSION`; do not keep
+  a second tracked runtime copy. Python launchers use the caller's `config.yaml`
+  unless `WATCHDOG_CONFIG` or `-c` selects another file; never write operational
+  files into site-packages. Native/container users still do not require Python.
 - Preserve exit codes: `0` healthy/no remediation, `1` unavailable or a
   remediation attempt, and `2` configuration or runtime error.
 - Keep new behavior opt-in. Do not change existing state-file names or format,
@@ -150,6 +159,41 @@ must use argv arrays and bounded timeouts.
 
 ## Verification
 
+CI-only Python packages use `.github/requirements-ci.txt` with exact versions
+and SHA-256 wheel hashes for CPython 3.12 / Linux x86_64. Install with
+`--require-hashes --only-binary=:all:` in an isolated environment. Run
+`python3 tests/supply_chain.py` when changing workflows, dependency locks, or
+container bases. Preserve full Action commit pins, checked binary downloads,
+non-persisted checkout credentials, and job-scoped minimum token permissions.
+Scorecard's publishing job is the documented exception requiring read-all at
+workflow level and security-events/id-token write only in its analysis job.
+
+Python distribution builds use `.github/requirements-packaging.txt` on Python
+3.12/Linux x86_64. Keep its Hatchling pin synchronized with `pyproject.toml`.
+Run `python tests/python_launcher.py`, `python -m build --no-isolation`,
+`python -m twine check --strict dist/*`, and `python tests/python_package.py`
+after installing the hash-locked tools. Test installed wheel/sdist behavior,
+not just source imports. The separate package CI also covers Python 3.11.
+`pypi-publish.yml` must remain manual-only and default to TestPyPI: give OIDC
+write only to its environment-protected artifact-only publisher, never the
+build/test job. Do not publish or register a project without user authorization.
+
+`.clusterfuzzlite/` is a genuine CI-only Atheris/libFuzzer integration using a
+digest-pinned official SDK. Its root compiler is a build-only exception, never
+a runtime deployment image. Preserve bounded inputs/deadlines, literal argv,
+validation no-side-effect guards, and JSON/HTML/Prometheus property oracles.
+Run `python3 tests/fuzzing.py` for these boundaries; Bash itself is not claimed
+to have native ASan instrumentation. JSON must escape every non-NUL character
+below U+0020, including uncommon controls.
+
+Release artifacts come only from the resolved Git tag commit, not working-tree
+files. The signing job alone receives contents/id-token write, uses GitHub OIDC,
+and verifies the exact workflow/tag identity plus issuer before uploading.
+Never clobber existing release files or bypass production transparency checks.
+Run `python3 tests/release_artifacts.py` and `python3 tests/cosign_offline.py`
+(Cosign 3.1.3) for release changes. The latter uses disposable local keys only;
+GitHub OIDC is verified by an actual release run, not simulated locally.
+
 Start with the narrowest changed test in `tests/`, then run the relevant
 configuration/schema test and broader regression coverage:
 
@@ -173,7 +217,7 @@ exact tag. It is the same check used by the release workflow and the versioning
 test, so `VERSION`, generated CLI output, README archive instructions,
 changelog, and installer metadata cannot silently drift apart.
 
-`tests/run-all.sh` is the authoritative inventory and rejects unregistered test
+`tests/run-all.sh` is the authoritative Bash inventory and rejects unregistered Bash
 scripts. `tests/build.sh` keeps the generated distribution synchronized with
 the modules. `tests/schema.sh` requires Mike Farah `yq` v4 and Python's
 `jsonschema` package. CI installs ShellCheck, SQLite, yq, and jsonschema, then

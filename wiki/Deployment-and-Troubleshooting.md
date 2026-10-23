@@ -4,6 +4,54 @@ Watchdog is designed for a scheduler. Treat its configuration, binaries,
 environment files, state directory, and output directories as an operational
 security boundary.
 
+## CI supply-chain checks
+
+The [OpenSSF Scorecard audit](../docs/scorecard-audit.md) separates verified
+repository fixes from GitHub settings and historical signals. Actions and CI
+container images use immutable pins, Python CI dependencies use exact versions
+and wheel hashes, and write tokens are limited to jobs that need them.
+
+Run the offline configuration/negative tests on CPython 3.12 / Linux x86_64:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --require-hashes --only-binary=:all: \
+  -r .github/requirements-ci.txt
+.venv/bin/python tests/supply_chain.py
+```
+
+Native and container deployments do not require Python. The optional
+[`shellharbor-watchdog` Python distribution](Python-Package.md) requires Python
+3.11+ only when choosing that launcher. A changed hash must be verified
+against the upstream release; never bypass hash verification to unblock CI.
+
+## Fuzzing and signed release verification
+
+Use the [fuzzing and signature guide](../docs/fuzzing-and-release-signatures.md)
+to run real ClusterFuzzLite/Atheris targets, replay crash artifacts, and verify
+the exact release workflow identity before extracting a signed archive.
+The harness checks real Bash JSON/HTML/Prometheus escaping and configuration
+validation without runtime files, checks, hooks, or notification execution.
+
+```bash
+python3 tests/fuzzing.py
+python3 tests/release_artifacts.py
+python3 tests/cosign_offline.py # Cosign 3.1.3; disposable keys, no public signing.
+```
+
+Signed assets are available only after a successful `Signed release artifacts`
+run for a tag that includes that workflow. Automatic GitHub source ZIPs are not
+covered by the separately uploaded tar.gz signature; do not verify one archive
+and then install a different file.
+
+## Python / pip deployment
+
+Use the [Python Package guide](Python-Package.md) for virtual-environment
+installation and the module/console entrypoints. It executes the bundled Bash
+engine and still needs Linux, Bash, yq v4, curl, flock, and GNU coreutils. Use
+an explicit `-c` config path in cron/systemd, never write operational files into
+site-packages, and do not install the unrelated `watchdog` PyPI project.
+
 ## Docker deployment
 
 Docker is an optional packaging and scheduling surface; native single-file,
@@ -11,6 +59,11 @@ systemd, and cron deployments remain supported. The production runtime image is
 built from [`packaging/docker/Dockerfile`](../packaging/docker/Dockerfile).
 This is distinct from the root `Dockerfile`, which belongs exclusively to the
 GitHub Marketplace configuration-validation Action.
+
+The official Docker Hub image is
+[`shellharbor/watchdog`](https://hub.docker.com/r/shellharbor/watchdog). Use a
+complete release tag in production, for example
+`shellharbor/watchdog:1.7.9`, rather than a floating tag.
 
 For Kubernetes 1.31+, use the separate [Kubernetes Deployment](Kubernetes-Deployment.md)
 guide and Helm CronJob chart. It preserves Watchdog's finite lifecycle and
@@ -286,7 +339,7 @@ bash ./tests/versioning.sh
 bash ./tests/run-all.sh
 ```
 
-`tests/run-all.sh` is the authoritative inventory and fails if a test script is
+`tests/run-all.sh` is the authoritative Bash inventory and fails if a Bash test script is
 not registered before running every scenario. `tests/schema.sh` needs Mike
 Farah `yq` v4 and Python's `jsonschema` package. The suite isolates external
 programs through PATH shims and temporary directories; follow that pattern when
