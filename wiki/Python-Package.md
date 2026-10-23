@@ -123,8 +123,10 @@ TestPyPI. Nothing has been uploaded merely by adding these files.
    - Workflow filename: `pypi-publish.yml`.
    - Environment: `testpypi` or `pypi`, matching the index.
 3. Commit the packaging files, prepare a new release with matching `VERSION`,
-   documentation, chart, and changelog, and push its `vX.Y.Z` tag. Do not move a
-   previously published tag to add packaging support.
+   documentation, chart, and changelog. Merge the preparation PR only after its
+   required Bash/Python/CodeQL checks pass and an authorized reviewer approves
+   it; keep the approval gate enabled. Then push its new `vX.Y.Z` tag. Do not
+   move a previously published tag to add packaging support.
 4. In GitHub Actions, manually run **Publish Python package** from `main`, enter
    the existing release tag in the `tag` input, and choose `testpypi`. Do not
    select the tag as the workflow's execution branch: the environment admits

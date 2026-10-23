@@ -4,6 +4,13 @@ After every task with file changes, briefly record what changed and why: feature
 
 ## Unreleased
 
+### Fixed
+
+- Updated the SHA-pinned official Cosign installer to v4.1.2 in CI and release
+  signing. Its Sigstore-bundle verification supports the existing Cosign 3.1.3
+  pin, instead of requesting the removed detached `.sig` asset. This repairs
+  hosted CI without disabling integrity checks or changing the signing CLI.
+
 ### Added
 
 - Optional `shellharbor-watchdog` Python 3.11+ package with monitor and discovery

@@ -58,6 +58,10 @@ verifies these files with Cosign 3.1.3:
 - `watchdog-X.Y.Z.tar.gz.sigstore.json`
 - `SHA256SUMS.sigstore.json`
 
+CI and release signing use the SHA-pinned official Cosign installer v4.1.2.
+It verifies Cosign 3.x Sigstore bundles; older installer revisions that request
+the removed detached `.sig` release asset are incompatible with this pin.
+
 The bundles include signature/certificate/transparency information. The signing
 job alone has `contents: write` and `id-token: write`. No private-key secret is
 needed. The expected identity is the exact release workflow at `refs/tags/vX.Y.Z`,
