@@ -29,6 +29,7 @@ and threshold before scheduling a production run.
 ## Start here
 
 - [Quick Start](Quick-Start.md) — install, validate, run, and schedule a first check.
+- [Python Package](Python-Package.md) — pip installation, Python/module launchers, build tests, and manual Trusted Publishing.
 - [Configuration Reference](Configuration-Reference.md) — settings, templates, conditions, and safe command syntax.
 - [Checks and Security Monitoring](Checks-and-Security.md) — HTTP, TCP, commands, disk capacity, TLS certificate expiry, ClamAV, and event thresholds.
 - [Notifications and Remediation](Notifications-and-Remediation.md) — email, Telegram, Discord, Slack, ntfy, hooks, and recovery actions.
@@ -36,6 +37,7 @@ and threshold before scheduling a production run.
 - [Operations, Status, and History](Operations-CLI-and-History.md) — `status`, `notify-test`, history, reports, trends, metrics, and status pages.
 - [Discovery and Federation](Discovery-and-Federation.md) — offline Docker Compose/systemd discovery and agent/hub monitoring.
 - [Deployment and Troubleshooting](Deployment-and-Troubleshooting.md) — systemd, cron, permission boundaries, tests, and incident diagnosis.
+- [Kubernetes Deployment](Kubernetes-Deployment.md) — Helm CronJob installation, persistent state, Secrets, upgrade/rollback, and cluster safety boundaries.
 
 ## Mental model
 

@@ -14,10 +14,23 @@ http_status_is_successful() {
     return 1
 }
 
+json_assertion_path_to_yq() {
+    local json_path="$1"
+
+    case "$json_path" in
+        '$') printf '.' ;;
+        '$.'*) printf '.%s' "${json_path:2}" ;;
+        '$['*) printf '.%s' "${json_path:1}" ;;
+        *) return 1 ;;
+    esac
+}
+
 check_http() {
     local index="$1"
-    local url method follow_redirects timeout_value error_file body_file="" http_status content_type time_total curl_status error_output
+    local url method follow_redirects timeout_value error_file body_file="" curl_config="" http_status content_type time_total curl_status error_output
     local header_count header_index header_name header_value header_value_env expected_content_type body_regex max_total_ms curl_output
+    local json_assertion_count json_assertion_index json_path yq_path equals_type expected_json actual_json actual_type actual_value
+    local ca_cert_file client_cert_file client_key_file proxy_url proxy_username_env proxy_password_env proxy_username proxy_password
     local -a curl_command
     url="$(yaml_read "${CHECK_CONFIG_PATH}.url")"
     method="$(yaml_read "${CHECK_CONFIG_PATH}.method // \"GET\"")"
@@ -26,7 +39,8 @@ check_http() {
     error_file="${TEMP_DIRECTORY}/http-${index}-${RANDOM}.err"
 
     body_regex="$(yaml_read "${CHECK_CONFIG_PATH}.expect.body_regex // \"\"")"
-    if [[ -n "$body_regex" ]]; then
+    json_assertion_count="$(yaml_read "${CHECK_CONFIG_PATH}.expect.json // [] | length")"
+    if [[ -n "$body_regex" || "$json_assertion_count" != 0 ]]; then
         body_file="$(mktemp "${TEMP_DIRECTORY}/http-${index}-body.XXXXXX")" || {
             CHECK_EXIT_CODE=2; CHECK_DETAIL='cannot create HTTP response temporary file'; return 1;
         }
@@ -61,6 +75,49 @@ check_http() {
         curl_command+=(--header "${header_name}: ${header_value}")
     done
     [[ "$follow_redirects" == "true" ]] && curl_command+=(--location --max-redirs 5)
+    ca_cert_file="$(yaml_read "${CHECK_CONFIG_PATH}.tls.ca_cert_file // \"\"")"
+    client_cert_file="$(yaml_read "${CHECK_CONFIG_PATH}.tls.client_cert_file // \"\"")"
+    client_key_file="$(yaml_read "${CHECK_CONFIG_PATH}.tls.client_key_file // \"\"")"
+    [[ -z "$ca_cert_file" ]] || curl_command+=(--cacert "$ca_cert_file")
+    [[ -z "$client_cert_file" ]] || curl_command+=(--cert "$client_cert_file")
+    [[ -z "$client_key_file" ]] || curl_command+=(--key "$client_key_file")
+
+    proxy_url="$(yaml_read "${CHECK_CONFIG_PATH}.proxy.url // \"\"")"
+    if [[ -n "$proxy_url" ]]; then
+        curl_command+=(--proxy "$proxy_url")
+        proxy_username_env="$(yaml_read "${CHECK_CONFIG_PATH}.proxy.username_env // \"\"")"
+        proxy_password_env="$(yaml_read "${CHECK_CONFIG_PATH}.proxy.password_env // \"\"")"
+        if [[ -n "$proxy_username_env" ]]; then
+            proxy_username="${!proxy_username_env:-}"
+            proxy_password="${!proxy_password_env:-}"
+            if [[ -z "$proxy_username" || -z "$proxy_password" ]]; then
+                [[ -z "$body_file" ]] || rm -f -- "$body_file"
+                CHECK_EXIT_CODE=2
+                if [[ -z "$proxy_username" ]]; then
+                    CHECK_DETAIL="missing HTTP proxy environment variable ${proxy_username_env}"
+                else
+                    CHECK_DETAIL="missing HTTP proxy environment variable ${proxy_password_env}"
+                fi
+                return 1
+            fi
+            if [[ "$proxy_username" == *$'\r'* || "$proxy_username" == *$'\n'* || "$proxy_password" == *$'\r'* || "$proxy_password" == *$'\n'* ]]; then
+                [[ -z "$body_file" ]] || rm -f -- "$body_file"
+                CHECK_EXIT_CODE=2
+                CHECK_DETAIL='HTTP proxy credentials contain a newline'
+                return 1
+            fi
+            curl_config="$(mktemp "${TEMP_DIRECTORY}/http-${index}-proxy.XXXXXX")" || {
+                [[ -z "$body_file" ]] || rm -f -- "$body_file"
+                CHECK_EXIT_CODE=2; CHECK_DETAIL='cannot create HTTP proxy credentials temporary file'; return 1;
+            }
+            if ! chmod 0600 "$curl_config" ||
+                ! printf 'proxy-user = "%s"\n' "$(escape_curl_config_value "${proxy_username}:${proxy_password}")" >"$curl_config"; then
+                rm -f -- "$curl_config" "$body_file"
+                CHECK_EXIT_CODE=2; CHECK_DETAIL='cannot write HTTP proxy credentials temporary file'; return 1;
+            fi
+            curl_command+=(--config "$curl_config")
+        fi
+    fi
     curl_command+=("$url")
 
     if [[ -n "$body_file" ]]; then
@@ -71,7 +128,7 @@ check_http() {
     curl_status=$?
     error_output=""
     [[ -s "$error_file" ]] && error_output="$(sanitize_detail "$(<"$error_file")")"
-    rm -f -- "$error_file"
+    rm -f -- "$error_file" "$curl_config"
 
     IFS=$'\t' read -r http_status content_type time_total <<<"$curl_output"
     CHECK_HTTP_STATUS="$http_status"
@@ -101,12 +158,68 @@ check_http() {
             return 1
         fi
     fi
-    if [[ -n "$body_file" ]]; then
+    if [[ -n "$body_file" && -n "$body_regex" ]]; then
         if ! grep -Eq -- "$body_regex" "$body_file"; then
             rm -f -- "$body_file"
             CHECK_DETAIL="HTTP ${http_status}; response body did not match expect.body_regex"
             return 1
         fi
+    fi
+    if (( json_assertion_count > 0 )); then
+        for ((json_assertion_index = 0; json_assertion_index < json_assertion_count; json_assertion_index++)); do
+            json_path="$(yaml_read "${CHECK_CONFIG_PATH}.expect.json[$json_assertion_index].path")"
+            yq_path="$(json_assertion_path_to_yq "$json_path")" || {
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; invalid expect.json path"
+                return 1
+            }
+            actual_json="$(yq eval --input-format=json -o=json -I=0 "$yq_path" "$body_file" 2>/dev/null)" || {
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; response body is not valid JSON"
+                return 1
+            }
+            actual_type="$(yq eval --input-format=json -r "${yq_path} | type" "$body_file" 2>/dev/null)" || {
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; response body is not valid JSON"
+                return 1
+            }
+            if [[ "$actual_type" == '!!null' ]]; then
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; JSON assertion path ${json_path} is missing or null"
+                return 1
+            fi
+            equals_type="$(yaml_read "${CHECK_CONFIG_PATH}.expect.json[$json_assertion_index].equals | type")"
+            if [[ "$equals_type" != '!!null' ]]; then
+                expected_json="$(yq eval -o=json -I=0 "${CHECK_CONFIG_PATH}.expect.json[$json_assertion_index].equals" "$CONFIG_FILE" 2>/dev/null)" || {
+                    rm -f -- "$body_file"
+                    CHECK_DETAIL="HTTP ${http_status}; cannot read JSON assertion"
+                    return 1
+                }
+                if [[ "$actual_json" != "$expected_json" ]]; then
+                    rm -f -- "$body_file"
+                    CHECK_DETAIL="HTTP ${http_status}; JSON assertion path ${json_path} did not equal expect.json[$json_assertion_index].equals"
+                    return 1
+                fi
+                continue
+            fi
+            if [[ "$actual_type" != '!!str' ]]; then
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; JSON assertion path ${json_path} is not a string for regex"
+                return 1
+            fi
+            actual_value="$(yq eval --input-format=json -r "$yq_path" "$body_file" 2>/dev/null)" || {
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; response body is not valid JSON"
+                return 1
+            }
+            if ! printf '%s\n' "$actual_value" | grep -Eq -- "$(yaml_read "${CHECK_CONFIG_PATH}.expect.json[$json_assertion_index].regex")"; then
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; JSON assertion path ${json_path} did not match expect.json[$json_assertion_index].regex"
+                return 1
+            fi
+        done
+    fi
+    if [[ -n "$body_file" ]]; then
         rm -f -- "$body_file"
     fi
     max_total_ms="$CHECK_HTTP_MAX_TOTAL_MS"

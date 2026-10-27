@@ -81,6 +81,7 @@ METRICS_ENABLED=0
 METRICS_DIRECTORY=""
 METRICS_FILENAME="watchdog.prom"
 METRICS_PREFIX="watchdog"
+METRICS_HEARTBEAT_ENABLED=0
 STATUS_PAGE_ENABLED=0
 STATUS_PAGE_DIRECTORY=""
 STATUS_PAGE_HTML_FILENAME="index.html"
@@ -227,7 +228,7 @@ die() {
 }
 
 # Invoked indirectly by the EXIT trap.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 cleanup() {
     if [[ -n "${TEMP_DIRECTORY:-}" && -d "$TEMP_DIRECTORY" ]]; then
         rm -rf -- "$TEMP_DIRECTORY"

@@ -839,10 +839,26 @@ validate_backoff_configuration() {
 }
 
 validate_metrics_configuration() {
-    local enabled value labels_type count index key value_type
+    local enabled value labels_type count index key value_type heartbeat_type heartbeat_enabled heartbeat_count
     enabled="$(yaml_read '.metrics.enabled // false')"
     [[ "$enabled" == true || "$enabled" == false ]] || die "metrics.enabled must be true or false."
-    [[ "$enabled" == true ]] || return 0
+    heartbeat_type="$(yaml_read '.metrics.heartbeat | type')"
+    [[ "$heartbeat_type" == '!!null' || "$heartbeat_type" == '!!map' ]] ||
+        die 'metrics.heartbeat must be a YAML map.'
+    if [[ "$heartbeat_type" == '!!map' ]]; then
+        heartbeat_count="$(yaml_read '.metrics.heartbeat | length')"
+        for ((index = 0; index < heartbeat_count; index++)); do
+            key="$(yaml_read ".metrics.heartbeat | to_entries[$index].key")"
+            [[ "$key" == enabled ]] || die "metrics.heartbeat.${key} is not supported."
+        done
+    fi
+    heartbeat_enabled="$(yaml_read '.metrics.heartbeat.enabled // false')"
+    [[ "$heartbeat_enabled" == true || "$heartbeat_enabled" == false ]] ||
+        die 'metrics.heartbeat.enabled must be true or false.'
+    [[ "$enabled" == true ]] || {
+        [[ "$heartbeat_enabled" == false ]] || die 'metrics.heartbeat.enabled requires metrics.enabled: true.'
+        return 0
+    }
     validate_string '.metrics.textfile_directory' 'metrics.textfile_directory'
     value="$(yaml_read '.metrics.textfile_directory')"
     [[ "$value" == /* ]] || die "metrics.textfile_directory must be an absolute path."
@@ -1073,6 +1089,50 @@ build_dependency_graph() {
     done
 }
 
+validate_notification_route_configuration() {
+    local index="$1" route_type channels_type value_type value channel_count channel
+    local -A seen_channels=()
+
+    route_type="$(yaml_read ".services[$index].notify | type")"
+    [[ "$route_type" == '!!null' ]] && return 0
+    [[ "$route_type" == '!!map' ]] || die "services[$index].notify must be a YAML map."
+
+    value_type="$(yaml_read ".services[$index].notify.severity | type")"
+    if [[ "$value_type" != '!!null' ]]; then
+        validate_string ".services[$index].notify.severity" "services[$index].notify.severity"
+        value="$(yaml_read ".services[$index].notify.severity")"
+        case "$value" in info|warning|error|critical) ;; *)
+            die "services[$index].notify.severity must be info, warning, error, or critical."
+            ;;
+        esac
+    fi
+
+    value_type="$(yaml_read ".services[$index].notify.runbook_url | type")"
+    if [[ "$value_type" != '!!null' ]]; then
+        validate_string ".services[$index].notify.runbook_url" "services[$index].notify.runbook_url"
+        value="$(yaml_read ".services[$index].notify.runbook_url")"
+        [[ "$value" =~ ^https?://[^[:space:]]+$ ]] ||
+            die "services[$index].notify.runbook_url must be an HTTP(S) URL without spaces."
+    fi
+
+    channels_type="$(yaml_read ".services[$index].notify.channels | type")"
+    [[ "$channels_type" == '!!null' ]] && return 0
+    [[ "$channels_type" == '!!seq' ]] || die "services[$index].notify.channels must be a YAML array."
+    channel_count="$(yaml_read ".services[$index].notify.channels | length")"
+    (( channel_count > 0 )) || die "services[$index].notify.channels must not be empty."
+    for ((channel = 0; channel < channel_count; channel++)); do
+        validate_string ".services[$index].notify.channels[$channel]" "services[$index].notify.channels[$channel]"
+        value="$(yaml_read ".services[$index].notify.channels[$channel]")"
+        case "$value" in email|telegram|discord|slack|ntfy|pagerduty|opsgenie) ;; *)
+            die "services[$index].notify.channels[$channel] is not a supported notification channel."
+            ;;
+        esac
+        [[ -z "${seen_channels[$value]:-}" ]] ||
+            die "services[$index].notify.channels[$channel] duplicates ${value}."
+        seen_channels["$value"]=1
+    done
+}
+
 validate_threshold_source() {
     local expression="$1" description="$2" source_type value value_type index count item_type pattern_status
     [[ "$(yaml_read "${expression} | type")" == '!!map' ]] || die "${description} must be a map."
@@ -1136,6 +1196,7 @@ validate_threshold_source() {
 validate_check_definition() {
     local expression="$1" description="$2" check_type value value_type status_count status_index status_code port field threshold_count=0
     local header_count header_index header_type header_name header_value_type header_env_type pattern_status
+    local assertion_count assertion_index assertion_type assertion_path equals_type regex_type
     validate_string "${expression}.type" "${description}.type"
     check_type="$(yaml_read "${expression}.type")"
     case "$check_type" in
@@ -1147,6 +1208,7 @@ validate_check_definition() {
             [[ "$value" == GET || "$value" == HEAD ]] || die "${description}.method must be GET or HEAD."
             value="$(yaml_read_true_default "${expression}.follow_redirects")"
             [[ "$value" == true || "$value" == false ]] || die "${description}.follow_redirects must be true or false."
+            validate_http_transport "${expression}" "${description}"
             value_type="$(yaml_read "${expression}.success_status | type")"
             if [[ "$value_type" != '!!null' ]]; then
                 [[ "$value_type" == '!!seq' ]] || die "${description}.success_status must be an array."
@@ -1202,6 +1264,39 @@ validate_check_definition() {
                     printf '' | grep -E -- "$value" >/dev/null 2>&1
                     pattern_status=$?
                     (( pattern_status <= 1 )) || die "${description}.expect.body_regex is not a valid extended regular expression."
+                fi
+                value_type="$(yaml_read "${expression}.expect.json | type")"
+                if [[ "$value_type" != '!!null' ]]; then
+                    [[ "$value_type" == '!!seq' ]] || die "${description}.expect.json must be an array."
+                    assertion_count="$(yaml_read "${expression}.expect.json | length")"
+                    (( assertion_count > 0 && assertion_count <= 20 )) || die "${description}.expect.json must contain from 1 through 20 assertions."
+                    for ((assertion_index = 0; assertion_index < assertion_count; assertion_index++)); do
+                        assertion_type="$(yaml_read "${expression}.expect.json[$assertion_index] | type")"
+                        [[ "$assertion_type" == '!!map' ]] || die "${description}.expect.json[$assertion_index] must be a map."
+                        validate_string "${expression}.expect.json[$assertion_index].path" "${description}.expect.json[$assertion_index].path"
+                        assertion_path="$(yaml_read "${expression}.expect.json[$assertion_index].path")"
+                        [[ "$assertion_path" =~ ^\$([.][A-Za-z_][A-Za-z0-9_]*|[[][0-9]+[]])*$ ]] ||
+                            die "${description}.expect.json[$assertion_index].path must use only $, .field, and [index] segments."
+                        equals_type="$(yaml_read "${expression}.expect.json[$assertion_index].equals | type")"
+                        regex_type="$(yaml_read "${expression}.expect.json[$assertion_index].regex | type")"
+                        [[ "$equals_type" == '!!null' || "$regex_type" == '!!null' ]] ||
+                            die "${description}.expect.json[$assertion_index] must set only one of equals or regex."
+                        [[ "$equals_type" != '!!null' || "$regex_type" != '!!null' ]] ||
+                            die "${description}.expect.json[$assertion_index] needs equals or regex."
+                        if [[ "$equals_type" != '!!null' ]]; then
+                            case "$equals_type" in
+                                '!!str'|'!!int'|'!!float'|'!!bool') ;;
+                                *) die "${description}.expect.json[$assertion_index].equals must be a string, number, or boolean." ;;
+                            esac
+                        else
+                            validate_string "${expression}.expect.json[$assertion_index].regex" "${description}.expect.json[$assertion_index].regex"
+                            value="$(yaml_read "${expression}.expect.json[$assertion_index].regex")"
+                            [[ -n "$value" ]] || die "${description}.expect.json[$assertion_index].regex must not be empty."
+                            printf '' | grep -E -- "$value" >/dev/null 2>&1
+                            pattern_status=$?
+                            (( pattern_status <= 1 )) || die "${description}.expect.json[$assertion_index].regex is not a valid extended regular expression."
+                        fi
+                    done
                 fi
                 value_type="$(yaml_read "${expression}.expect.max_total_ms | type")"
                 if [[ "$value_type" != '!!null' ]]; then
@@ -1347,6 +1442,13 @@ validate_check_definition() {
             is_positive_integer "$value" || die "${description}.${field} must be a positive integer."
         fi
     done
+
+    if [[ "$check_type" != http ]]; then
+        for field in proxy tls; do
+            value_type="$(yaml_read "${expression}.${field} | type")"
+            [[ "$value_type" == '!!null' ]] || die "${description}.${field} is supported only by HTTP checks."
+        done
+    fi
 }
 
 validate_configuration() {
@@ -1419,6 +1521,7 @@ validate_configuration() {
         validate_maintenance_configuration "$index" "$name"
         validate_escalation_configuration "$index" "$name"
         validate_circuit_breaker_configuration "$index" "$name"
+        validate_notification_route_configuration "$index"
     done
 
     hooks_type="$(yaml_read '.hooks | type')"
@@ -1550,6 +1653,7 @@ configure_metrics() {
     METRICS_DIRECTORY="$(yaml_read '.metrics.textfile_directory')"
     METRICS_FILENAME="$(yaml_read '.metrics.filename')"
     METRICS_PREFIX="$(yaml_read '.metrics.prefix')"
+    [[ "$(yaml_read '.metrics.heartbeat.enabled // false')" == true ]] && METRICS_HEARTBEAT_ENABLED=1
     [[ "$METRICS_FILENAME" == *.prom ]] ||
         log WARN "result=metrics-warning reason=filename-not-prom filename=${METRICS_FILENAME}"
 }

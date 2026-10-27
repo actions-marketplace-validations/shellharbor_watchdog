@@ -11,49 +11,78 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install ShellCheck
         run: |
           sudo apt-get update
           sudo apt-get install --yes shellcheck sqlite3
 
-      - name: Install yq v4
+      - name: Install verified yq v4
         env:
           YQ_VERSION: v4.47.2
+          YQ_SHA256: 1bb99e1019e23de33c7e6afc23e93dad72aad6cf2cb03c797f068ea79814ddb0
         run: |
-          sudo wget -qO /usr/local/bin/yq \
-            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-          sudo chmod +x /usr/local/bin/yq
+          set -euo pipefail
+          yq_binary="$(mktemp "${RUNNER_TEMP}/watchdog-yq.XXXXXX")"
+          trap 'rm -f -- "$yq_binary"' EXIT
+          curl --fail --silent --show-error --location \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
+            --output "$yq_binary"
+          printf '%s  %s\n' "$YQ_SHA256" "$yq_binary" | sha256sum --check -
+          sudo install -m 0755 "$yq_binary" /usr/local/bin/yq
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
 
-      - name: Install CI-only schema validator
-        run: python -m pip install 'jsonschema>=4.19,<5'
+      - name: Install hash-locked CI dependencies
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r .github/requirements-ci.txt
+
+      - name: Check supply-chain security contracts
+        run: |
+          python tests/supply_chain.py
+          python tests/fuzzing.py
+          python tests/release_artifacts.py
+
+      - name: Install Cosign for disposable-key verification tests
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      - name: Verify real signatures reject tampering and wrong keys
+        run: python tests/cosign_offline.py
 
       - name: Check generated single-file distribution
         run: bash ./scripts/build-watchdog.sh --check
 
       - name: Check Bash syntax
-        run: bash -n service-watchdog.sh watchdog-discover.sh install.sh scripts/build-watchdog.sh scripts/github-action-entrypoint.sh lib/watchdog/*.sh tests/*.sh
+        run: bash -n service-watchdog.sh watchdog-discover.sh install.sh scripts/build-watchdog.sh scripts/release-preflight.sh scripts/github-action-entrypoint.sh scripts/sign-release.sh .clusterfuzzlite/*.sh packaging/docker/*.sh lib/watchdog/*.sh tests/*.sh
 
       - name: Check Bash 4.3 syntax compatibility
         run: |
           docker run --rm \
             --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
             --workdir /workspace \
-            bash:4.3.48 \
-            bash -c '[[ "$BASH_VERSION" == 4.3.* ]] && bash -n service-watchdog.sh watchdog-discover.sh install.sh scripts/build-watchdog.sh scripts/github-action-entrypoint.sh lib/watchdog/*.sh tests/*.sh'
+            bash:4.3.48@sha256:bf64958c6c0ecdcc85d12cc2f38a2c62e7be5179b987753e3269e547312b0a46 \
+            bash -c '[[ "$BASH_VERSION" == 4.3.* ]] && bash -n service-watchdog.sh watchdog-discover.sh install.sh scripts/build-watchdog.sh scripts/release-preflight.sh scripts/github-action-entrypoint.sh scripts/sign-release.sh .clusterfuzzlite/*.sh packaging/docker/*.sh lib/watchdog/*.sh tests/*.sh'
 
       - name: Run ShellCheck
         # The generated script is the complete program. Linting individual
         # library fragments would incorrectly flag globals used by another fragment.
-        run: shellcheck service-watchdog.sh watchdog-discover.sh install.sh scripts/build-watchdog.sh scripts/github-action-entrypoint.sh tests/*.sh
+        run: shellcheck service-watchdog.sh watchdog-discover.sh install.sh scripts/build-watchdog.sh scripts/release-preflight.sh scripts/github-action-entrypoint.sh scripts/sign-release.sh .clusterfuzzlite/*.sh packaging/docker/*.sh tests/*.sh
 
       - name: Run full regression suite
         run: bash ./tests/run-all.sh
 
       - name: Test GitHub Action container
         run: bash ./tests/github-action.sh --docker
+
+      - name: Test Watchdog runtime container
+        run: bash ./tests/docker-runtime.sh --docker
+
+      - name: Test optional Docker socket image
+        run: bash ./tests/docker-runtime.sh --docker-socket

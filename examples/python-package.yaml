@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/shellharbor/watchdog/main/schema/watchdog.schema.json
+# Local smoke example only. Use service-account-owned paths before scheduling.
+settings:
+  log_file: /tmp/watchdog-python-example/watchdog.log
+  lock_file: /tmp/watchdog-python-example/watchdog.lock
+  state_directory: /tmp/watchdog-python-example/state
+  default_attempts: 1
+  default_retry_delay: 0
+
+security:
+  remediation_policy:
+    mode: enforce
+    allowed_commands:
+      - command: ["/usr/bin/true"]
+
+services:
+  - name: python-package-smoke
+    check:
+      type: command
+      commands:
+        - command: ["/usr/bin/true"]

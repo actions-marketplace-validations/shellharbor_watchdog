@@ -30,6 +30,27 @@ The runtime targets Linux with Bash 4.3+, Mike Farah `yq` v4, `curl`, `flock`,
 and GNU coreutils. CI additionally provides ShellCheck, SQLite, and Python's
 `jsonschema` package.
 
+Install CI-only Python tools from the exact, hash-checked lock on CPython 3.12
+and Linux x86_64:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --require-hashes --only-binary=:all: -r .github/requirements-ci.txt
+.venv/bin/python tests/supply_chain.py
+```
+
+Actions must retain full commit SHA pins and Docker bases must retain digest
+pins. Review Dependabot updates and synchronize transitive Python hashes rather
+than relaxing verification. Read the [Scorecard audit](docs/scorecard-audit.md)
+before treating a low score as a code vulnerability.
+
+Run `python3 tests/fuzzing.py` for changed serialization or validation paths.
+The dedicated ClusterFuzzLite workflow mutates real inputs; retain discovered
+crashes as synthetic regression fixtures. Release changes also require
+`python3 tests/release_artifacts.py` and, with Cosign 3.1.3 installed,
+`python3 tests/cosign_offline.py`. See the
+[operating guide](docs/fuzzing-and-release-signatures.md) for build and replay.
+
 Watchdog's source is organized in `lib/watchdog/`; the portable
 `service-watchdog.sh` file is generated. Edit the relevant module, then run
 `bash ./scripts/build-watchdog.sh` before committing.
@@ -60,10 +81,16 @@ bash ./tests/versioning.sh
 bash ./tests/run-all.sh
 ```
 
-`tests/run-all.sh` is the authoritative inventory. It fails when a test script
+`tests/run-all.sh` is the authoritative Bash inventory. It fails when a Bash test script
 is not registered, then runs every scenario. `tests/schema.sh` needs `yq` v4
 and Python `jsonschema`; CI installs them. Do not claim an unavailable local
 tool passed—state the exact blocker instead.
+
+The optional Python distribution has its own **Python package** workflow.
+Run `python3 tests/python_launcher.py` and the hash-locked wheel/sdist installation
+checks in the [Python Package guide](wiki/Python-Package.md#build-and-test) when
+changing its launcher, package metadata, bundled resources, or publishing jobs.
+Native Bash/container installations still do not require Python.
 
 ## Pull request expectations
 

@@ -1,7 +1,13 @@
 version: 2
 updates:
-  - package-ecosystem: composer
+  - package-ecosystem: pip
     directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: pip
+    directory: /.github
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
@@ -11,3 +17,21 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: docker
+    directory: /packaging/docker
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: docker
+    directory: /.clusterfuzzlite
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

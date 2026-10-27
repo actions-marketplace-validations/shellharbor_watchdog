@@ -83,6 +83,7 @@ METRICS_ENABLED=0
 METRICS_DIRECTORY=""
 METRICS_FILENAME="watchdog.prom"
 METRICS_PREFIX="watchdog"
+METRICS_HEARTBEAT_ENABLED=0
 STATUS_PAGE_ENABLED=0
 STATUS_PAGE_DIRECTORY=""
 STATUS_PAGE_HTML_FILENAME="index.html"
@@ -229,7 +230,7 @@ die() {
 }
 
 # Invoked indirectly by the EXIT trap.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 cleanup() {
     if [[ -n "${TEMP_DIRECTORY:-}" && -d "$TEMP_DIRECTORY" ]]; then
         rm -rf -- "$TEMP_DIRECTORY"
@@ -1321,10 +1322,26 @@ validate_backoff_configuration() {
 }
 
 validate_metrics_configuration() {
-    local enabled value labels_type count index key value_type
+    local enabled value labels_type count index key value_type heartbeat_type heartbeat_enabled heartbeat_count
     enabled="$(yaml_read '.metrics.enabled // false')"
     [[ "$enabled" == true || "$enabled" == false ]] || die "metrics.enabled must be true or false."
-    [[ "$enabled" == true ]] || return 0
+    heartbeat_type="$(yaml_read '.metrics.heartbeat | type')"
+    [[ "$heartbeat_type" == '!!null' || "$heartbeat_type" == '!!map' ]] ||
+        die 'metrics.heartbeat must be a YAML map.'
+    if [[ "$heartbeat_type" == '!!map' ]]; then
+        heartbeat_count="$(yaml_read '.metrics.heartbeat | length')"
+        for ((index = 0; index < heartbeat_count; index++)); do
+            key="$(yaml_read ".metrics.heartbeat | to_entries[$index].key")"
+            [[ "$key" == enabled ]] || die "metrics.heartbeat.${key} is not supported."
+        done
+    fi
+    heartbeat_enabled="$(yaml_read '.metrics.heartbeat.enabled // false')"
+    [[ "$heartbeat_enabled" == true || "$heartbeat_enabled" == false ]] ||
+        die 'metrics.heartbeat.enabled must be true or false.'
+    [[ "$enabled" == true ]] || {
+        [[ "$heartbeat_enabled" == false ]] || die 'metrics.heartbeat.enabled requires metrics.enabled: true.'
+        return 0
+    }
     validate_string '.metrics.textfile_directory' 'metrics.textfile_directory'
     value="$(yaml_read '.metrics.textfile_directory')"
     [[ "$value" == /* ]] || die "metrics.textfile_directory must be an absolute path."
@@ -1555,6 +1572,50 @@ build_dependency_graph() {
     done
 }
 
+validate_notification_route_configuration() {
+    local index="$1" route_type channels_type value_type value channel_count channel
+    local -A seen_channels=()
+
+    route_type="$(yaml_read ".services[$index].notify | type")"
+    [[ "$route_type" == '!!null' ]] && return 0
+    [[ "$route_type" == '!!map' ]] || die "services[$index].notify must be a YAML map."
+
+    value_type="$(yaml_read ".services[$index].notify.severity | type")"
+    if [[ "$value_type" != '!!null' ]]; then
+        validate_string ".services[$index].notify.severity" "services[$index].notify.severity"
+        value="$(yaml_read ".services[$index].notify.severity")"
+        case "$value" in info|warning|error|critical) ;; *)
+            die "services[$index].notify.severity must be info, warning, error, or critical."
+            ;;
+        esac
+    fi
+
+    value_type="$(yaml_read ".services[$index].notify.runbook_url | type")"
+    if [[ "$value_type" != '!!null' ]]; then
+        validate_string ".services[$index].notify.runbook_url" "services[$index].notify.runbook_url"
+        value="$(yaml_read ".services[$index].notify.runbook_url")"
+        [[ "$value" =~ ^https?://[^[:space:]]+$ ]] ||
+            die "services[$index].notify.runbook_url must be an HTTP(S) URL without spaces."
+    fi
+
+    channels_type="$(yaml_read ".services[$index].notify.channels | type")"
+    [[ "$channels_type" == '!!null' ]] && return 0
+    [[ "$channels_type" == '!!seq' ]] || die "services[$index].notify.channels must be a YAML array."
+    channel_count="$(yaml_read ".services[$index].notify.channels | length")"
+    (( channel_count > 0 )) || die "services[$index].notify.channels must not be empty."
+    for ((channel = 0; channel < channel_count; channel++)); do
+        validate_string ".services[$index].notify.channels[$channel]" "services[$index].notify.channels[$channel]"
+        value="$(yaml_read ".services[$index].notify.channels[$channel]")"
+        case "$value" in email|telegram|discord|slack|ntfy|pagerduty|opsgenie) ;; *)
+            die "services[$index].notify.channels[$channel] is not a supported notification channel."
+            ;;
+        esac
+        [[ -z "${seen_channels[$value]:-}" ]] ||
+            die "services[$index].notify.channels[$channel] duplicates ${value}."
+        seen_channels["$value"]=1
+    done
+}
+
 validate_threshold_source() {
     local expression="$1" description="$2" source_type value value_type index count item_type pattern_status
     [[ "$(yaml_read "${expression} | type")" == '!!map' ]] || die "${description} must be a map."
@@ -1618,6 +1679,7 @@ validate_threshold_source() {
 validate_check_definition() {
     local expression="$1" description="$2" check_type value value_type status_count status_index status_code port field threshold_count=0
     local header_count header_index header_type header_name header_value_type header_env_type pattern_status
+    local assertion_count assertion_index assertion_type assertion_path equals_type regex_type
     validate_string "${expression}.type" "${description}.type"
     check_type="$(yaml_read "${expression}.type")"
     case "$check_type" in
@@ -1629,6 +1691,7 @@ validate_check_definition() {
             [[ "$value" == GET || "$value" == HEAD ]] || die "${description}.method must be GET or HEAD."
             value="$(yaml_read_true_default "${expression}.follow_redirects")"
             [[ "$value" == true || "$value" == false ]] || die "${description}.follow_redirects must be true or false."
+            validate_http_transport "${expression}" "${description}"
             value_type="$(yaml_read "${expression}.success_status | type")"
             if [[ "$value_type" != '!!null' ]]; then
                 [[ "$value_type" == '!!seq' ]] || die "${description}.success_status must be an array."
@@ -1684,6 +1747,39 @@ validate_check_definition() {
                     printf '' | grep -E -- "$value" >/dev/null 2>&1
                     pattern_status=$?
                     (( pattern_status <= 1 )) || die "${description}.expect.body_regex is not a valid extended regular expression."
+                fi
+                value_type="$(yaml_read "${expression}.expect.json | type")"
+                if [[ "$value_type" != '!!null' ]]; then
+                    [[ "$value_type" == '!!seq' ]] || die "${description}.expect.json must be an array."
+                    assertion_count="$(yaml_read "${expression}.expect.json | length")"
+                    (( assertion_count > 0 && assertion_count <= 20 )) || die "${description}.expect.json must contain from 1 through 20 assertions."
+                    for ((assertion_index = 0; assertion_index < assertion_count; assertion_index++)); do
+                        assertion_type="$(yaml_read "${expression}.expect.json[$assertion_index] | type")"
+                        [[ "$assertion_type" == '!!map' ]] || die "${description}.expect.json[$assertion_index] must be a map."
+                        validate_string "${expression}.expect.json[$assertion_index].path" "${description}.expect.json[$assertion_index].path"
+                        assertion_path="$(yaml_read "${expression}.expect.json[$assertion_index].path")"
+                        [[ "$assertion_path" =~ ^\$([.][A-Za-z_][A-Za-z0-9_]*|[[][0-9]+[]])*$ ]] ||
+                            die "${description}.expect.json[$assertion_index].path must use only $, .field, and [index] segments."
+                        equals_type="$(yaml_read "${expression}.expect.json[$assertion_index].equals | type")"
+                        regex_type="$(yaml_read "${expression}.expect.json[$assertion_index].regex | type")"
+                        [[ "$equals_type" == '!!null' || "$regex_type" == '!!null' ]] ||
+                            die "${description}.expect.json[$assertion_index] must set only one of equals or regex."
+                        [[ "$equals_type" != '!!null' || "$regex_type" != '!!null' ]] ||
+                            die "${description}.expect.json[$assertion_index] needs equals or regex."
+                        if [[ "$equals_type" != '!!null' ]]; then
+                            case "$equals_type" in
+                                '!!str'|'!!int'|'!!float'|'!!bool') ;;
+                                *) die "${description}.expect.json[$assertion_index].equals must be a string, number, or boolean." ;;
+                            esac
+                        else
+                            validate_string "${expression}.expect.json[$assertion_index].regex" "${description}.expect.json[$assertion_index].regex"
+                            value="$(yaml_read "${expression}.expect.json[$assertion_index].regex")"
+                            [[ -n "$value" ]] || die "${description}.expect.json[$assertion_index].regex must not be empty."
+                            printf '' | grep -E -- "$value" >/dev/null 2>&1
+                            pattern_status=$?
+                            (( pattern_status <= 1 )) || die "${description}.expect.json[$assertion_index].regex is not a valid extended regular expression."
+                        fi
+                    done
                 fi
                 value_type="$(yaml_read "${expression}.expect.max_total_ms | type")"
                 if [[ "$value_type" != '!!null' ]]; then
@@ -1829,6 +1925,13 @@ validate_check_definition() {
             is_positive_integer "$value" || die "${description}.${field} must be a positive integer."
         fi
     done
+
+    if [[ "$check_type" != http ]]; then
+        for field in proxy tls; do
+            value_type="$(yaml_read "${expression}.${field} | type")"
+            [[ "$value_type" == '!!null' ]] || die "${description}.${field} is supported only by HTTP checks."
+        done
+    fi
 }
 
 validate_configuration() {
@@ -1901,6 +2004,7 @@ validate_configuration() {
         validate_maintenance_configuration "$index" "$name"
         validate_escalation_configuration "$index" "$name"
         validate_circuit_breaker_configuration "$index" "$name"
+        validate_notification_route_configuration "$index"
     done
 
     hooks_type="$(yaml_read '.hooks | type')"
@@ -2032,6 +2136,7 @@ configure_metrics() {
     METRICS_DIRECTORY="$(yaml_read '.metrics.textfile_directory')"
     METRICS_FILENAME="$(yaml_read '.metrics.filename')"
     METRICS_PREFIX="$(yaml_read '.metrics.prefix')"
+    [[ "$(yaml_read '.metrics.heartbeat.enabled // false')" == true ]] && METRICS_HEARTBEAT_ENABLED=1
     [[ "$METRICS_FILENAME" == *.prom ]] ||
         log WARN "result=metrics-warning reason=filename-not-prom filename=${METRICS_FILENAME}"
 }
@@ -2118,6 +2223,53 @@ log_configured_sequence_plan() {
         (( ${#planned_command[@]} > 0 )) || continue
         formatted="$(format_command planned_command)"
         log INFO "service=${service_name} action=${label}-command index=${command_index} result=would-run command=${formatted}"
+    done
+}
+validate_http_transport() {
+    local expression="$1" description="$2" value value_type field cert_type key_type
+    local username_type password_type
+
+    value_type="$(yaml_read "${expression}.tls | type")"
+    if [[ "$value_type" != '!!null' ]]; then
+        [[ "$value_type" == '!!map' ]] || die "${description}.tls must be a map."
+        cert_type="$(yaml_read "${expression}.tls.client_cert_file | type")"
+        key_type="$(yaml_read "${expression}.tls.client_key_file | type")"
+        [[ "$cert_type" == '!!null' && "$key_type" == '!!null' ]] ||
+            [[ "$cert_type" != '!!null' && "$key_type" != '!!null' ]] ||
+            die "${description}.tls.client_cert_file and ${description}.tls.client_key_file must be set together."
+        for field in ca_cert_file client_cert_file client_key_file; do
+            value_type="$(yaml_read "${expression}.tls.${field} | type")"
+            [[ "$value_type" == '!!null' ]] && continue
+            validate_string "${expression}.tls.${field}" "${description}.tls.${field}"
+            value="$(yaml_read "${expression}.tls.${field}")"
+            [[ "$value" == /* ]] || die "${description}.tls.${field} must be an absolute path."
+            [[ -f "$value" && -r "$value" ]] || die "${description}.tls.${field} must be a readable regular file."
+        done
+    fi
+
+    value_type="$(yaml_read "${expression}.proxy | type")"
+    [[ "$value_type" == '!!null' ]] && return 0
+    [[ "$value_type" == '!!map' ]] || die "${description}.proxy must be a map."
+    validate_string "${expression}.proxy.url" "${description}.proxy.url"
+    value="$(yaml_read "${expression}.proxy.url")"
+    [[ "$value" =~ ^https?://[^@[:space:]]+$ ]] ||
+        die "${description}.proxy.url must be an HTTP(S) URL without credentials or spaces."
+
+    username_type="$(yaml_read "${expression}.proxy.username_env | type")"
+    password_type="$(yaml_read "${expression}.proxy.password_env | type")"
+    [[ "$username_type" == '!!null' || "$username_type" == '!!str' ]] ||
+        die "${description}.proxy.username_env must be a string."
+    [[ "$password_type" == '!!null' || "$password_type" == '!!str' ]] ||
+        die "${description}.proxy.password_env must be a string."
+    [[ "$username_type" == '!!null' && "$password_type" == '!!null' ]] ||
+        [[ "$username_type" != '!!null' && "$password_type" != '!!null' ]] ||
+        die "${description}.proxy.username_env and ${description}.proxy.password_env must be set together."
+    for field in username_env password_env; do
+        value_type="$(yaml_read "${expression}.proxy.${field} | type")"
+        [[ "$value_type" == '!!null' ]] && continue
+        validate_string "${expression}.proxy.${field}" "${description}.proxy.${field}"
+        value="$(yaml_read "${expression}.proxy.${field}")"
+        [[ "$value" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "${description}.proxy.${field} is not a valid environment variable name."
     done
 }
 sanitize_detail() {
@@ -2326,10 +2478,12 @@ render_email_template() {
     local template="$1"
     local event="$2"
     local timestamp="$3"
-    local detail node_id
+    local detail node_id severity runbook_url
     detail="$(sanitize_detail "$CHECK_DETAIL")"
     node_id="$(yaml_read '.federation.node_id // ""')"
     [[ -n "$node_id" ]] || node_id="$(hostname -s)"
+    severity="$(notification_severity "$event")"
+    runbook_url="$(notification_runbook_url)"
 
     template="${template//\{\{service\}\}/$CURRENT_SERVICE}"
     template="${template//\{\{event\}\}/$event}"
@@ -2349,6 +2503,8 @@ render_email_template() {
     template="${template//\{\{incident_id\}\}/$INCIDENT_ID}"
     template="${template//\{\{incident_duration_seconds\}\}/$INCIDENT_DURATION}"
     template="${template//\{\{remediation_result\}\}/$INCIDENT_REMEDIATION_RESULT}"
+    template="${template//\{\{severity\}\}/$severity}"
+    template="${template//\{\{runbook_url\}\}/$runbook_url}"
     printf '%s' "$template"
 }
 
@@ -2361,7 +2517,7 @@ escape_html() {
 }
 
 escape_json() {
-    local value="$1"
+    local value="$1" code character escaped
     value="${value//\\/\\\\}"
     value="${value//\"/\\\"}"
     value="${value//$'\t'/\\t}"
@@ -2370,12 +2526,22 @@ escape_json() {
     value="${value//$'\b'/\\b}"
     value="${value//$'\f'/\\f}"
     value="${value//$'\v'/\\u000b}"
+    # JSON forbids every unescaped byte below U+0020, not only whitespace.
+    # NUL is not representable in a Bash string; preserve all other controls.
+    if [[ "$value" == *[[:cntrl:]]* ]]; then
+        for ((code = 1; code < 32; code++)); do
+            printf -v character '\\%03o' "$code"
+            printf -v character '%b' "$character"
+            printf -v escaped '\\u%04x' "$code"
+            value="${value//"$character"/"$escaped"}"
+        done
+    fi
     printf '%s' "$value"
 }
 
 render_webhook_template() {
     local format="$1" template="$2" event="$3" timestamp="$4"
-    local service detail check_type http_status check_exit action_status consecutive_unavailable escalation_count node_id match_count threshold comparator since
+    local service detail check_type http_status check_exit action_status consecutive_unavailable escalation_count node_id match_count threshold comparator since severity runbook_url
 
     service="$CURRENT_SERVICE"
     detail="$(sanitize_detail "$CHECK_DETAIL")"
@@ -2391,6 +2557,8 @@ render_webhook_template() {
     threshold="${THRESHOLD_VALUE:-n/a}"
     comparator="${THRESHOLD_COMPARATOR:-n/a}"
     since="${THRESHOLD_SINCE:-n/a}"
+    severity="$(notification_severity "$event")"
+    runbook_url="$(notification_runbook_url)"
     case "$format" in
         html)
             service="$(escape_html "$service")"; detail="$(escape_html "$detail")"
@@ -2398,6 +2566,7 @@ render_webhook_template() {
             check_exit="$(escape_html "$check_exit")"; action_status="$(escape_html "$action_status")"
             node_id="$(escape_html "$node_id")"; match_count="$(escape_html "$match_count")"
             threshold="$(escape_html "$threshold")"; comparator="$(escape_html "$comparator")"; since="$(escape_html "$since")"
+            severity="$(escape_html "$severity")"; runbook_url="$(escape_html "$runbook_url")"
             ;;
         json)
             service="$(escape_json "$service")"; detail="$(escape_json "$detail")"
@@ -2405,6 +2574,7 @@ render_webhook_template() {
             check_exit="$(escape_json "$check_exit")"; action_status="$(escape_json "$action_status")"
             node_id="$(escape_json "$node_id")"; match_count="$(escape_json "$match_count")"
             threshold="$(escape_json "$threshold")"; comparator="$(escape_json "$comparator")"; since="$(escape_json "$since")"
+            severity="$(escape_json "$severity")"; runbook_url="$(escape_json "$runbook_url")"
             ;;
     esac
     template="${template//\{\{service\}\}/$service}"
@@ -2425,6 +2595,8 @@ render_webhook_template() {
     template="${template//\{\{incident_id\}\}/$INCIDENT_ID}"
     template="${template//\{\{incident_duration_seconds\}\}/$INCIDENT_DURATION}"
     template="${template//\{\{remediation_result\}\}/$INCIDENT_REMEDIATION_RESULT}"
+    template="${template//\{\{severity\}\}/$severity}"
+    template="${template//\{\{runbook_url\}\}/$runbook_url}"
     printf '%s' "$template"
 }
 
@@ -2479,9 +2651,60 @@ oncall_provider_handles_event() {
     case "$1" in failure|recovery|escalation) return 0 ;; *) return 1 ;; esac
 }
 
+service_notification_route_allows() {
+    local channel="$1" index channels_type channel_count item
+
+    index="${SERVICE_INDEX[$CURRENT_SERVICE]:-}"
+    [[ -n "$index" ]] || return 0
+    channels_type="$(yaml_read ".services[$index].notify.channels | type")"
+    [[ "$channels_type" == '!!null' ]] && return 0
+    channel_count="$(yaml_read ".services[$index].notify.channels | length")"
+    for ((item = 0; item < channel_count; item++)); do
+        [[ "$(yaml_read ".services[$index].notify.channels[$item]")" == "$channel" ]] && return 0
+    done
+    return 1
+}
+
+notification_severity() {
+    local event="$1" index severity_type severity
+
+    index="${SERVICE_INDEX[$CURRENT_SERVICE]:-}"
+    if [[ -n "$index" ]]; then
+        severity_type="$(yaml_read ".services[$index].notify.severity | type")"
+        if [[ "$severity_type" != '!!null' ]]; then
+            severity="$(yaml_read ".services[$index].notify.severity")"
+            printf '%s' "$severity"
+            return
+        fi
+    fi
+    case "$event" in
+        escalation) printf 'critical' ;;
+        recovery) printf 'info' ;;
+        *) printf 'error' ;;
+    esac
+}
+
+notification_runbook_url() {
+    local index
+
+    index="${SERVICE_INDEX[$CURRENT_SERVICE]:-}"
+    [[ -n "$index" ]] || return 0
+    yaml_read ".services[$index].notify.runbook_url // \"\""
+}
+
+opsgenie_priority_for_event() {
+    case "$(notification_severity "$1")" in
+        critical) printf 'P1' ;;
+        error) printf 'P2' ;;
+        warning) printf 'P3' ;;
+        info) printf 'P5' ;;
+    esac
+}
+
 send_single_webhook() {
     local webhook="$1" event="$2" env_name="" secret="" url="" template text timestamp
     local response_file response http_status curl_status thread_id priority error_file error_text payload_file='' secret_config=''
+    local severity runbook_url payload_details
     local -a curl_command
 
     case "$webhook" in
@@ -2553,18 +2776,22 @@ send_single_webhook() {
             text="$(render_webhook_template plain "$template" "$event" "$timestamp")"
             (( NOTIFY_TEST_MODE == 0 )) || text="[TEST] ${text}"
             url='https://events.pagerduty.com/v2/enqueue'
+            severity="$(notification_severity "$event")"
+            runbook_url="$(notification_runbook_url)"
+            payload_details=''
+            [[ -z "$runbook_url" ]] || payload_details="$(printf ',\"custom_details\":{\"runbook_url\":\"%s\"}' "$(escape_json "$runbook_url")")"
             case "$event" in
                 recovery)
                     text="$(printf '{"routing_key":"%s","event_action":"resolve","dedup_key":"%s"}' \
                         "$(escape_json "$secret")" "$(escape_json "$(oncall_incident_key)")")"
                     ;;
                 escalation)
-                    text="$(printf '{"routing_key":"%s","event_action":"trigger","dedup_key":"%s","payload":{"summary":"%s","source":"%s","severity":"critical"}}' \
-                        "$(escape_json "$secret")" "$(escape_json "$(oncall_incident_key)")" "$(escape_json "$text")" "$(escape_json "$CURRENT_SERVICE")")"
+                    text="$(printf '{"routing_key":"%s","event_action":"trigger","dedup_key":"%s","payload":{"summary":"%s","source":"%s","severity":"%s"%s}}' \
+                        "$(escape_json "$secret")" "$(escape_json "$(oncall_incident_key)")" "$(escape_json "$text")" "$(escape_json "$CURRENT_SERVICE")" "$severity" "$payload_details")"
                     ;;
                 *)
-                    text="$(printf '{"routing_key":"%s","event_action":"trigger","dedup_key":"%s","payload":{"summary":"%s","source":"%s","severity":"error"}}' \
-                        "$(escape_json "$secret")" "$(escape_json "$(oncall_incident_key)")" "$(escape_json "$text")" "$(escape_json "$CURRENT_SERVICE")")"
+                    text="$(printf '{"routing_key":"%s","event_action":"trigger","dedup_key":"%s","payload":{"summary":"%s","source":"%s","severity":"%s"%s}}' \
+                        "$(escape_json "$secret")" "$(escape_json "$(oncall_incident_key)")" "$(escape_json "$text")" "$(escape_json "$CURRENT_SERVICE")" "$severity" "$payload_details")"
                     ;;
             esac
             payload_file="$(mktemp "${TEMP_DIRECTORY}/pagerduty-payload.XXXXXX")" || {
@@ -2587,18 +2814,22 @@ send_single_webhook() {
             else
                 url='https://api.opsgenie.com/v2/alerts'
             fi
+            priority="$(opsgenie_priority_for_event "$event")"
+            runbook_url="$(notification_runbook_url)"
+            payload_details=''
+            [[ -z "$runbook_url" ]] || payload_details="$(printf ',\"details\":{\"runbook_url\":\"%s\"}' "$(escape_json "$runbook_url")")"
             case "$event" in
                 recovery)
                     url+="/$(oncall_incident_key)/close?identifierType=alias"
                     text="$(printf '{"source":"watchdog","note":"%s"}' "$(escape_json "$text")")"
                     ;;
                 escalation)
-                    text="$(printf '{"message":"%s","alias":"%s","description":"%s","priority":"P1","source":"watchdog"}' \
-                        "$(escape_json "${text:0:130}")" "$(escape_json "$(oncall_incident_key)")" "$(escape_json "$text")")"
+                    text="$(printf '{"message":"%s","alias":"%s","description":"%s","priority":"%s","source":"watchdog"%s}' \
+                        "$(escape_json "${text:0:130}")" "$(escape_json "$(oncall_incident_key)")" "$(escape_json "$text")" "$priority" "$payload_details")"
                     ;;
                 *)
-                    text="$(printf '{"message":"%s","alias":"%s","description":"%s","priority":"P2","source":"watchdog"}' \
-                        "$(escape_json "${text:0:130}")" "$(escape_json "$(oncall_incident_key)")" "$(escape_json "$text")")"
+                    text="$(printf '{"message":"%s","alias":"%s","description":"%s","priority":"%s","source":"watchdog"%s}' \
+                        "$(escape_json "${text:0:130}")" "$(escape_json "$(oncall_incident_key)")" "$(escape_json "$text")" "$priority" "$payload_details")"
                     ;;
             esac
             payload_file="$(mktemp "${TEMP_DIRECTORY}/opsgenie-payload.XXXXXX")" || {
@@ -2663,6 +2894,7 @@ send_webhook_notification() {
     for webhook in telegram discord slack ntfy pagerduty opsgenie; do
         enabled="$(yaml_read ".notifications.webhooks.${webhook}.enabled // false")"
         [[ "$enabled" == true ]] || continue
+        service_notification_route_allows "$webhook" || continue
         oncall_provider_handles_event "$event" || [[ "$webhook" != pagerduty && "$webhook" != opsgenie ]] || continue
         send_single_webhook "$webhook" "$event" || failed=1
     done
@@ -2671,9 +2903,12 @@ send_webhook_notification() {
 
 log_notification_plan() {
     local service_name="$1" event="$2" webhook
-    (( EMAIL_ENABLED == 0 )) || log INFO "service=${service_name} action=email result=would-send event=${event}"
+    if (( EMAIL_ENABLED == 1 )) && service_notification_route_allows email; then
+        log INFO "service=${service_name} action=email result=would-send event=${event}"
+    fi
     for webhook in telegram discord slack ntfy pagerduty opsgenie; do
         if [[ "$(yaml_read ".notifications.webhooks.${webhook}.enabled // false")" == true ]]; then
+            service_notification_route_allows "$webhook" || continue
             oncall_provider_handles_event "$event" || [[ "$webhook" != pagerduty && "$webhook" != opsgenie ]] || continue
             log INFO "service=${service_name} action=webhook result=would-send provider=${webhook} event=${event}"
         fi
@@ -2768,6 +3003,7 @@ send_email_notification() {
     local timestamp subject_template body_template subject body
 
     (( EMAIL_ENABLED == 1 )) || return 0
+    service_notification_route_allows email || return 0
     case "$event" in
         failure)
             subject_template="$EMAIL_FAILURE_SUBJECT"
@@ -2829,10 +3065,23 @@ http_status_is_successful() {
     return 1
 }
 
+json_assertion_path_to_yq() {
+    local json_path="$1"
+
+    case "$json_path" in
+        '$') printf '.' ;;
+        '$.'*) printf '.%s' "${json_path:2}" ;;
+        '$['*) printf '.%s' "${json_path:1}" ;;
+        *) return 1 ;;
+    esac
+}
+
 check_http() {
     local index="$1"
-    local url method follow_redirects timeout_value error_file body_file="" http_status content_type time_total curl_status error_output
+    local url method follow_redirects timeout_value error_file body_file="" curl_config="" http_status content_type time_total curl_status error_output
     local header_count header_index header_name header_value header_value_env expected_content_type body_regex max_total_ms curl_output
+    local json_assertion_count json_assertion_index json_path yq_path equals_type expected_json actual_json actual_type actual_value
+    local ca_cert_file client_cert_file client_key_file proxy_url proxy_username_env proxy_password_env proxy_username proxy_password
     local -a curl_command
     url="$(yaml_read "${CHECK_CONFIG_PATH}.url")"
     method="$(yaml_read "${CHECK_CONFIG_PATH}.method // \"GET\"")"
@@ -2841,7 +3090,8 @@ check_http() {
     error_file="${TEMP_DIRECTORY}/http-${index}-${RANDOM}.err"
 
     body_regex="$(yaml_read "${CHECK_CONFIG_PATH}.expect.body_regex // \"\"")"
-    if [[ -n "$body_regex" ]]; then
+    json_assertion_count="$(yaml_read "${CHECK_CONFIG_PATH}.expect.json // [] | length")"
+    if [[ -n "$body_regex" || "$json_assertion_count" != 0 ]]; then
         body_file="$(mktemp "${TEMP_DIRECTORY}/http-${index}-body.XXXXXX")" || {
             CHECK_EXIT_CODE=2; CHECK_DETAIL='cannot create HTTP response temporary file'; return 1;
         }
@@ -2876,6 +3126,49 @@ check_http() {
         curl_command+=(--header "${header_name}: ${header_value}")
     done
     [[ "$follow_redirects" == "true" ]] && curl_command+=(--location --max-redirs 5)
+    ca_cert_file="$(yaml_read "${CHECK_CONFIG_PATH}.tls.ca_cert_file // \"\"")"
+    client_cert_file="$(yaml_read "${CHECK_CONFIG_PATH}.tls.client_cert_file // \"\"")"
+    client_key_file="$(yaml_read "${CHECK_CONFIG_PATH}.tls.client_key_file // \"\"")"
+    [[ -z "$ca_cert_file" ]] || curl_command+=(--cacert "$ca_cert_file")
+    [[ -z "$client_cert_file" ]] || curl_command+=(--cert "$client_cert_file")
+    [[ -z "$client_key_file" ]] || curl_command+=(--key "$client_key_file")
+
+    proxy_url="$(yaml_read "${CHECK_CONFIG_PATH}.proxy.url // \"\"")"
+    if [[ -n "$proxy_url" ]]; then
+        curl_command+=(--proxy "$proxy_url")
+        proxy_username_env="$(yaml_read "${CHECK_CONFIG_PATH}.proxy.username_env // \"\"")"
+        proxy_password_env="$(yaml_read "${CHECK_CONFIG_PATH}.proxy.password_env // \"\"")"
+        if [[ -n "$proxy_username_env" ]]; then
+            proxy_username="${!proxy_username_env:-}"
+            proxy_password="${!proxy_password_env:-}"
+            if [[ -z "$proxy_username" || -z "$proxy_password" ]]; then
+                [[ -z "$body_file" ]] || rm -f -- "$body_file"
+                CHECK_EXIT_CODE=2
+                if [[ -z "$proxy_username" ]]; then
+                    CHECK_DETAIL="missing HTTP proxy environment variable ${proxy_username_env}"
+                else
+                    CHECK_DETAIL="missing HTTP proxy environment variable ${proxy_password_env}"
+                fi
+                return 1
+            fi
+            if [[ "$proxy_username" == *$'\r'* || "$proxy_username" == *$'\n'* || "$proxy_password" == *$'\r'* || "$proxy_password" == *$'\n'* ]]; then
+                [[ -z "$body_file" ]] || rm -f -- "$body_file"
+                CHECK_EXIT_CODE=2
+                CHECK_DETAIL='HTTP proxy credentials contain a newline'
+                return 1
+            fi
+            curl_config="$(mktemp "${TEMP_DIRECTORY}/http-${index}-proxy.XXXXXX")" || {
+                [[ -z "$body_file" ]] || rm -f -- "$body_file"
+                CHECK_EXIT_CODE=2; CHECK_DETAIL='cannot create HTTP proxy credentials temporary file'; return 1;
+            }
+            if ! chmod 0600 "$curl_config" ||
+                ! printf 'proxy-user = "%s"\n' "$(escape_curl_config_value "${proxy_username}:${proxy_password}")" >"$curl_config"; then
+                rm -f -- "$curl_config" "$body_file"
+                CHECK_EXIT_CODE=2; CHECK_DETAIL='cannot write HTTP proxy credentials temporary file'; return 1;
+            fi
+            curl_command+=(--config "$curl_config")
+        fi
+    fi
     curl_command+=("$url")
 
     if [[ -n "$body_file" ]]; then
@@ -2886,7 +3179,7 @@ check_http() {
     curl_status=$?
     error_output=""
     [[ -s "$error_file" ]] && error_output="$(sanitize_detail "$(<"$error_file")")"
-    rm -f -- "$error_file"
+    rm -f -- "$error_file" "$curl_config"
 
     IFS=$'\t' read -r http_status content_type time_total <<<"$curl_output"
     CHECK_HTTP_STATUS="$http_status"
@@ -2916,12 +3209,68 @@ check_http() {
             return 1
         fi
     fi
-    if [[ -n "$body_file" ]]; then
+    if [[ -n "$body_file" && -n "$body_regex" ]]; then
         if ! grep -Eq -- "$body_regex" "$body_file"; then
             rm -f -- "$body_file"
             CHECK_DETAIL="HTTP ${http_status}; response body did not match expect.body_regex"
             return 1
         fi
+    fi
+    if (( json_assertion_count > 0 )); then
+        for ((json_assertion_index = 0; json_assertion_index < json_assertion_count; json_assertion_index++)); do
+            json_path="$(yaml_read "${CHECK_CONFIG_PATH}.expect.json[$json_assertion_index].path")"
+            yq_path="$(json_assertion_path_to_yq "$json_path")" || {
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; invalid expect.json path"
+                return 1
+            }
+            actual_json="$(yq eval --input-format=json -o=json -I=0 "$yq_path" "$body_file" 2>/dev/null)" || {
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; response body is not valid JSON"
+                return 1
+            }
+            actual_type="$(yq eval --input-format=json -r "${yq_path} | type" "$body_file" 2>/dev/null)" || {
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; response body is not valid JSON"
+                return 1
+            }
+            if [[ "$actual_type" == '!!null' ]]; then
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; JSON assertion path ${json_path} is missing or null"
+                return 1
+            fi
+            equals_type="$(yaml_read "${CHECK_CONFIG_PATH}.expect.json[$json_assertion_index].equals | type")"
+            if [[ "$equals_type" != '!!null' ]]; then
+                expected_json="$(yq eval -o=json -I=0 "${CHECK_CONFIG_PATH}.expect.json[$json_assertion_index].equals" "$CONFIG_FILE" 2>/dev/null)" || {
+                    rm -f -- "$body_file"
+                    CHECK_DETAIL="HTTP ${http_status}; cannot read JSON assertion"
+                    return 1
+                }
+                if [[ "$actual_json" != "$expected_json" ]]; then
+                    rm -f -- "$body_file"
+                    CHECK_DETAIL="HTTP ${http_status}; JSON assertion path ${json_path} did not equal expect.json[$json_assertion_index].equals"
+                    return 1
+                fi
+                continue
+            fi
+            if [[ "$actual_type" != '!!str' ]]; then
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; JSON assertion path ${json_path} is not a string for regex"
+                return 1
+            fi
+            actual_value="$(yq eval --input-format=json -r "$yq_path" "$body_file" 2>/dev/null)" || {
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; response body is not valid JSON"
+                return 1
+            }
+            if ! printf '%s\n' "$actual_value" | grep -Eq -- "$(yaml_read "${CHECK_CONFIG_PATH}.expect.json[$json_assertion_index].regex")"; then
+                rm -f -- "$body_file"
+                CHECK_DETAIL="HTTP ${http_status}; JSON assertion path ${json_path} did not match expect.json[$json_assertion_index].regex"
+                return 1
+            fi
+        done
+    fi
+    if [[ -n "$body_file" ]]; then
         rm -f -- "$body_file"
     fi
     max_total_ms="$CHECK_HTTP_MAX_TOTAL_MS"
@@ -4507,11 +4856,56 @@ prometheus_labels() {
     done
 }
 
+prometheus_static_labels() {
+    local count index key value separator=""
+
+    count="$(yaml_read '.metrics.static_labels // {} | length')"
+    for ((index = 0; index < count; index++)); do
+        key="$(yaml_read ".metrics.static_labels | to_entries[$index].key")"
+        value="$(yaml_read ".metrics.static_labels | to_entries[$index].value")"
+        printf '%s%s="%s"' "$separator" "$key" "$(escape_prometheus_label_value "$value")"
+        separator=,
+    done
+}
+
+metrics_heartbeat_marker_file() {
+    printf '%s/metrics-heartbeat.timestamp' "$STATE_DIRECTORY"
+}
+
+read_metrics_heartbeat_timestamp() {
+    local file timestamp=""
+
+    file="$(metrics_heartbeat_marker_file)"
+    if [[ -r "$file" ]]; then
+        IFS= read -r timestamp <"$file" || true
+    fi
+    [[ "$timestamp" =~ ^[0-9]+$ ]] || timestamp=0
+    printf '%s' "$timestamp"
+}
+
+write_metrics_heartbeat_timestamp() {
+    local timestamp="$1" file temporary
+
+    [[ "$timestamp" =~ ^[0-9]+$ ]] || return 1
+    file="$(metrics_heartbeat_marker_file)"
+    temporary="${file}.tmp.$$"
+    if ! printf '%s\n' "$timestamp" >"$temporary"; then
+        rm -f -- "$temporary"
+        return 1
+    fi
+    chmod 0640 "$temporary" 2>/dev/null || true
+    if ! mv -f -- "$temporary" "$file"; then
+        rm -f -- "$temporary"
+        return 1
+    fi
+}
+
 write_prometheus_metrics() {
     local target temporary service_count index service_name check_type state state_value now
     local last_check last_transition failures checks remediations outage labels metric_prefix
     local errors remediation_success remediation_failed incidents incident_active incident_started incident_duration last_incident_duration
     local last_success escalations blocked_dependency blocked_backoff blocked_flapping flapping_active backoff_until backoff_remaining http_total_ms http_latency_threshold_ms
+    local heartbeat_labels heartbeat_timestamp metric_families=22
     (( METRICS_ENABLED == 1 )) || return 0
     if (( DRY_RUN == 1 )); then
         log INFO 'result=metrics-skipped reason=dry-run'
@@ -4535,7 +4929,33 @@ write_prometheus_metrics() {
     metric_prefix="$(sanitize_prometheus_metric_name "$METRICS_PREFIX")"
     now="$(date '+%s')"
     service_count="$(yaml_read '.services | length')"
+    heartbeat_labels=""
+    heartbeat_timestamp=0
+    if (( METRICS_HEARTBEAT_ENABLED == 1 )); then
+        if [[ -z "$ONLY_SERVICE" ]]; then
+            if write_metrics_heartbeat_timestamp "$now"; then
+                heartbeat_timestamp="$now"
+            else
+                log ERROR "result=metrics-heartbeat-failed file=$(metrics_heartbeat_marker_file) reason=state-write"
+            fi
+        else
+            heartbeat_timestamp="$(read_metrics_heartbeat_timestamp)"
+        fi
+    fi
+    if (( 10#$heartbeat_timestamp > 0 )); then
+        heartbeat_labels="$(prometheus_static_labels)"
+        metric_families=23
+    fi
     {
+        if (( 10#$heartbeat_timestamp > 0 )); then
+            printf '# HELP %s_heartbeat_timestamp_seconds Unix timestamp of the latest completed full Watchdog run\n' "$metric_prefix"
+            printf '# TYPE %s_heartbeat_timestamp_seconds gauge\n' "$metric_prefix"
+            if [[ -n "$heartbeat_labels" ]]; then
+                printf '%s_heartbeat_timestamp_seconds{%s} %s\n' "$metric_prefix" "$heartbeat_labels" "$heartbeat_timestamp"
+            else
+                printf '%s_heartbeat_timestamp_seconds %s\n' "$metric_prefix" "$heartbeat_timestamp"
+            fi
+        fi
         printf '# HELP %s_service_state Service state (0=healthy, 1=unavailable, 2=unknown, 3=dependency_failed, 4=degraded, 5=recovering)\n' "$metric_prefix"
         printf '# TYPE %s_service_state gauge\n' "$metric_prefix"
         printf '# HELP %s_service_last_check_timestamp Unix timestamp of the last check attempt\n' "$metric_prefix"
@@ -4645,7 +5065,7 @@ write_prometheus_metrics() {
     } >"$temporary" || { rm -f -- "$temporary"; log ERROR "result=metrics-failed file=${target} reason=write"; return 0; }
     chmod 0644 "$temporary" 2>/dev/null || true
     if mv -f -- "$temporary" "$target"; then
-        log INFO "result=metrics-written file=${target} services=${service_count} metrics=22"
+        log INFO "result=metrics-written file=${target} services=${service_count} metrics=${metric_families}"
     else
         rm -f -- "$temporary"
         log ERROR "result=metrics-failed file=${target} reason=rename"
@@ -5704,6 +6124,10 @@ notify_test_run() {
         fi
         if [[ "$enabled" != true ]]; then
             printf '%s | skipped | disabled\n' "$channel"
+            continue
+        fi
+        if ! service_notification_route_allows "$channel"; then
+            printf '%s | skipped | not routed\n' "$channel"
             continue
         fi
         enabled_count=$((enabled_count + 1))

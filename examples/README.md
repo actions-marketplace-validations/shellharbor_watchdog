@@ -7,9 +7,11 @@ service names, and commands before enabling scheduled runs.
 | Example | Use case |
 | --- | --- |
 | [`http-docker-compose.yaml`](http-docker-compose.yaml) | Check an HTTP health endpoint and restart Docker Compose services |
-| [`smart-http.yaml`](smart-http.yaml) | Assert JSON content safely with secret headers and a latency SLO |
+| [`smart-http.yaml`](smart-http.yaml) | Assert selected JSON fields safely with secret headers and a latency SLO |
+| [`http-mtls-proxy.yaml`](http-mtls-proxy.yaml) | Check a private HTTP endpoint through an authenticated proxy with mTLS |
 | [`tcp-systemd.yaml`](tcp-systemd.yaml) | Check a TCP port and restart a systemd unit |
 | [`command-check.yaml`](command-check.yaml) | Use a local command as the health check |
+| [`python-package.yaml`](python-package.yaml) | Validate or smoke-test the pip-installed Python launcher without network calls or remediation |
 | [`disk-space.yaml`](disk-space.yaml) | Alert through email and webhooks when a filesystem runs low on free space |
 | [`dns-ping.yaml`](dns-ping.yaml) | Verify authoritative DNS answers and ICMP packet loss/latency |
 | [`tls-certificate.yaml`](tls-certificate.yaml) | Alert before a TLS leaf certificate expires, with optional SNI and port |
@@ -20,12 +22,16 @@ service names, and commands before enabling scheduled runs.
 | [`smtp-email.yaml`](smtp-email.yaml) | Send built-in SMTP email on failure and recovery transitions |
 | [`telegram-notifications.yaml`](telegram-notifications.yaml) | Send Telegram transition notifications with a bot token from the environment |
 | [`market-data-server.yaml`](market-data-server.yaml) | Monitor PostgreSQL and a Go service with separate liveness/readiness, backoff, flapping, escalation, metrics, and an enforced action allowlist |
+| [`prometheus-heartbeat.yaml`](prometheus-heartbeat.yaml) | Publish service metrics plus a scheduler heartbeat for the bundled Grafana and Alertmanager assets |
 | [`auto-discovery/`](auto-discovery) | Generate a draft `services:` fragment from static Compose and systemd files |
 | [`notify-test.yaml`](notify-test.yaml) | Test notification delivery explicitly after filling in SMTP settings and secrets |
 | [`status-cli.yaml`](status-cli.yaml) | Read a service's persisted state with the terminal `status` command |
 | [`status-page-uptime.yaml`](status-page-uptime.yaml) | Publish a static status page with 30 days of observed-availability bars |
 | [`oncall-notifications.yaml`](oncall-notifications.yaml) | Open and resolve deduplicated PagerDuty and Opsgenie alerts |
+| [`notification-routing.yaml`](notification-routing.yaml) | Route a service to selected channels with severity and a runbook link |
 | [`remote-http-remediation.yaml`](remote-http-remediation.yaml) | Invoke an allowlisted remote API safely as remediation |
+| [`../docker-compose.example.yml`](../docker-compose.example.yml) | Run the non-root, one-shot production container with deliberate config and state mounts |
+| [`kubernetes/`](kubernetes) | Deploy the same production image as a suspended, least-privilege Helm CronJob with durable state |
 
 Validate YAML and policy without running any checks or creating runtime state:
 

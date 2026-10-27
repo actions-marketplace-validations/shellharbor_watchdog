@@ -4,6 +4,177 @@ Watchdog is designed for a scheduler. Treat its configuration, binaries,
 environment files, state directory, and output directories as an operational
 security boundary.
 
+## CI supply-chain checks
+
+The [OpenSSF Scorecard audit](../docs/scorecard-audit.md) separates verified
+repository fixes from GitHub settings and historical signals. Actions and CI
+container images use immutable pins, Python CI dependencies use exact versions
+and wheel hashes, and write tokens are limited to jobs that need them.
+
+Run the offline configuration/negative tests on CPython 3.12 / Linux x86_64:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --require-hashes --only-binary=:all: \
+  -r .github/requirements-ci.txt
+.venv/bin/python tests/supply_chain.py
+```
+
+Native and container deployments do not require Python. The optional
+[`shellharbor-watchdog` Python distribution](Python-Package.md) requires Python
+3.11+ only when choosing that launcher. A changed hash must be verified
+against the upstream release; never bypass hash verification to unblock CI.
+
+## Fuzzing and signed release verification
+
+Use the [fuzzing and signature guide](../docs/fuzzing-and-release-signatures.md)
+to run real ClusterFuzzLite/Atheris targets, replay crash artifacts, and verify
+the exact release workflow identity before extracting a signed archive.
+The harness checks real Bash JSON/HTML/Prometheus escaping and configuration
+validation without runtime files, checks, hooks, or notification execution.
+
+```bash
+python3 tests/fuzzing.py
+python3 tests/release_artifacts.py
+python3 tests/cosign_offline.py # Cosign 3.1.3; disposable keys, no public signing.
+```
+
+Signed assets are available only after a successful `Signed release artifacts`
+run for a tag that includes that workflow. Automatic GitHub source ZIPs are not
+covered by the separately uploaded tar.gz signature; do not verify one archive
+and then install a different file.
+
+## Python / pip deployment
+
+Use the [Python Package guide](Python-Package.md) for virtual-environment
+installation and the module/console entrypoints. It executes the bundled Bash
+engine and still needs Linux, Bash, yq v4, curl, flock, and GNU coreutils. Use
+an explicit `-c` config path in cron/systemd, never write operational files into
+site-packages, and do not install the unrelated `watchdog` PyPI project.
+
+## Docker deployment
+
+Docker is an optional packaging and scheduling surface; native single-file,
+systemd, and cron deployments remain supported. The production runtime image is
+built from [`packaging/docker/Dockerfile`](../packaging/docker/Dockerfile).
+This is distinct from the root `Dockerfile`, which belongs exclusively to the
+GitHub Marketplace configuration-validation Action.
+
+The official Docker Hub image is
+[`shellharbor/watchdog`](https://hub.docker.com/r/shellharbor/watchdog). Use a
+complete release tag in production, for example
+`shellharbor/watchdog:1.7.9`, rather than a floating tag.
+
+For Kubernetes 1.31+, use the separate [Kubernetes Deployment](Kubernetes-Deployment.md)
+guide and Helm CronJob chart. It preserves Watchdog's finite lifecycle and
+least-privilege container contract; Kubernetes is not a Docker socket or host
+systemd integration surface.
+
+Copy the container-specific configuration, adapt its sample endpoint, and make
+the persistent directory writable by the image's fixed non-root user:
+
+```bash
+cp packaging/docker/config.example.yaml config.yaml
+mkdir -p state
+sudo chown -R 10001:10001 state
+docker compose -f docker-compose.example.yml run --rm watchdog validate
+docker compose -f docker-compose.example.yml run --rm watchdog
+```
+
+The default Compose service mounts only `config.yaml` read-only and `state/` at
+`/var/lib/watchdog`. The supplied configuration places state and the operational
+log in that mounted location. Add an explicit mount when enabling history,
+Prometheus textfile metrics, or a generated status page outside it. The image
+runs as UID/GID `10001`, has a read-only root filesystem, drops all capabilities,
+sets `no-new-privileges`, and gives only `/tmp` a small writable tmpfs. It does
+not use privileged mode, host networking, host filesystem mounts, or the Docker
+socket.
+
+Container checks observe the container network and only filesystems deliberately
+mounted into it. A disk check cannot see host capacity without a specific
+read-only host mount, and `127.0.0.1` targets the Watchdog container rather
+than the host. Host `systemctl` commands are unavailable. Docker CLI actions
+need the separate socket profile below. A ClamAV check also needs an explicitly
+mounted scan path and current virus definitions; neither is silently bundled as
+host access.
+
+The image is a one-shot job. Its `0`/`1`/`2` exit code is the monitoring result;
+it is not a daemon or a scheduler. For example, a host cron can launch a fresh
+cycle each minute:
+
+```cron
+* * * * * cd /srv/watchdog && /usr/bin/docker compose -f docker-compose.example.yml run --rm --no-deps watchdog
+```
+
+The container's `HEALTHCHECK` runs Watchdog's read-only `validate` command. It
+checks the mounted configuration and required runtime dependencies, not the
+monitored services. Consume the scheduled run's exit code plus Watchdog alerts,
+metrics, and `status` output for service health. The entrypoint forwards stop
+signals through the Watchdog process tree, including a running check command,
+then waits for Watchdog's normal cleanup and preserves its exit code.
+
+Secrets remain environment variables named by the configuration's `*_env`
+fields. Do not bake them into an image or compose file. A one-off run can use a
+protected Docker environment file:
+
+```bash
+docker run --rm \
+  --env-file /etc/watchdog/notification.env \
+  --volume "$PWD/config.yaml:/etc/watchdog/config.yaml:ro" \
+  --volume "$PWD/state:/var/lib/watchdog" \
+  ghcr.io/shellharbor/watchdog:<version> notify-test --channel all
+```
+
+For a future external scheduler or agent, the stable container interface is a
+mounted `/etc/watchdog/config.yaml` (or `WATCHDOG_CONFIG`), deliberate output
+mounts, secret environment variables, one command, and its exit status. No
+agent implementation is required for this contract.
+
+### Kubernetes-ready container contract
+
+Docker Compose is a local deployment description, not an application
+dependency. New Dockerfiles, Compose services, and future microservices should
+remain portable to Kubernetes: use one explicit non-root workload, forward
+`SIGTERM`/`SIGINT` for graceful cleanup, keep configuration and secrets in
+environment variables or read-only mounts, and declare every writable or
+persistent location.
+
+Do not make application behavior depend on fixed container names, Compose
+network names, `depends_on` health ordering, host networking or paths,
+privileged mode, or the Docker socket. Use configurable DNS names or URLs,
+application-level readiness/retries, and explicit health/readiness behavior
+instead. This contract does not require Kubernetes manifests or Helm charts;
+those are added only when a deployment request calls for them.
+
+### Docker socket remediation is exceptional
+
+The `watchdog-docker-actions` service is inactive unless the
+`docker-actions` profile is selected. It uses the separately published
+`-docker` image because that image alone includes the Docker CLI. Set the host
+socket group ID explicitly before using it:
+
+```bash
+export WATCHDOG_DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+docker compose -f docker-compose.example.yml \
+  --profile docker-actions run --rm watchdog-docker-actions
+```
+
+Mounting `/var/run/docker.sock` gives the container control of the host Docker
+daemon and can permit host-level compromise. Use a dedicated reviewed config,
+least-privilege action policy, and a safer remote remediation path where
+possible. The default service deliberately never receives this access.
+
+### Image releases
+
+Published GitHub Releases build GHCR images for `linux/amd64` and `linux/arm64`.
+They receive full, minor, and major version aliases; `latest` is only moved by a
+non-prerelease. A manually selected tag must already contain this distribution.
+The Docker-enabled image uses the same aliases with a `-docker` suffix. OCI
+labels, provenance, and an SBOM are attached during publication.
+Docker Hub publication is optional and runs only when `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN` repository secrets are both configured; otherwise the GHCR
+job proceeds independently.
+
 ## Systemd deployment
 
 The installer provides `service-watchdog.service` and a one-minute
@@ -144,7 +315,7 @@ notifications. Use `notify-test`, whose outgoing content carries `[TEST]`.
 | Symptom | Likely cause and next step |
 | --- | --- |
 | Exit `2` before checks start | Run `validate`; correct the named YAML path, missing secret variable, unavailable optional tool, timezone, directory, dependency name, or action policy entry. |
-| No alert from a failed service | Confirm a transition actually occurred; repeated failure alerts are suppressed. Check enabled channels, environment variables, maintenance status, and the operational log. Use `notify-test`. |
+| No alert from a failed service | Confirm a transition actually occurred; repeated failure alerts are suppressed. Check enabled channels, the service's optional `notify.channels`, environment variables, maintenance status, and the operational log. Use `notify-test -s SERVICE` to see `not routed` channels. |
 | `status` says `unknown` | The service has no state file yet. Run one successful normal monitoring pass, then inspect again. |
 | Action never runs | Look for cooldown/backoff, maintenance, flapping, manual intervention, circuit-open, dependency failure, or a denied remediation policy. `status` exposes many of these blockers. |
 | A consumer is `dependency_failed` | Repair its required upstream service first. The downstream health check intentionally did not run. |
@@ -168,7 +339,7 @@ bash ./tests/versioning.sh
 bash ./tests/run-all.sh
 ```
 
-`tests/run-all.sh` is the authoritative inventory and fails if a test script is
+`tests/run-all.sh` is the authoritative Bash inventory and fails if a Bash test script is
 not registered before running every scenario. `tests/schema.sh` needs Mike
 Farah `yq` v4 and Python's `jsonschema` package. The suite isolates external
 programs through PATH shims and temporary directories; follow that pattern when
@@ -177,6 +348,22 @@ same suite on pushes and pull requests, and compiles every Bash source with the
 official `bash:4.3.48` container to protect the documented compatibility floor.
 The CI workflow also builds the public Docker Action and verifies valid and
 invalid configuration exit codes.
+
+## Preparing a repository release
+
+Update `VERSION`, the stable archive URL and directory name in `README.md`, and
+the dated changelog section before creating a tag. Then run the shared
+preflight with the exact intended tag:
+
+```bash
+bash ./scripts/release-preflight.sh vX.Y.Z
+```
+
+It confirms the tag matches `VERSION`, the generated CLI reports that version,
+the README points to the matching source archive, the changelog has a matching
+heading, and the installer copies `VERSION`. The `Release metadata` GitHub
+Actions workflow invokes the same script after a tag push, but passing it
+locally catches a mismatch before an immutable release tag exists.
 
 ## Get help with useful evidence
 

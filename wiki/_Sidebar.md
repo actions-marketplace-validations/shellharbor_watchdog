@@ -1,5 +1,6 @@
 - [Home](Home.md)
 - [Quick Start](Quick-Start.md)
+- [Python Package](Python-Package.md)
 - [Configuration Reference](Configuration-Reference.md)
 - [Checks and Security Monitoring](Checks-and-Security.md)
 - [Notifications and Remediation](Notifications-and-Remediation.md)
@@ -7,3 +8,4 @@
 - [Operations, Status, and History](Operations-CLI-and-History.md)
 - [Discovery and Federation](Discovery-and-Federation.md)
 - [Deployment and Troubleshooting](Deployment-and-Troubleshooting.md)
+- [Kubernetes Deployment](Kubernetes-Deployment.md)

@@ -3,6 +3,8 @@
 ![Watchdog Hero Banner](https://i.postimg.cc/XYzDRyfV/watchdog-monitoring-shell-bash-hero.jpg)
 
 [![CI](https://github.com/shellharbor/watchdog/actions/workflows/ci.yml/badge.svg)](https://github.com/shellharbor/watchdog/actions/workflows/ci.yml)
+[![Kubernetes](https://github.com/shellharbor/watchdog/actions/workflows/kubernetes.yml/badge.svg)](https://github.com/shellharbor/watchdog/actions/workflows/kubernetes.yml)
+[![Docker Hub](https://img.shields.io/docker/pulls/shellharbor/watchdog?logo=docker&logoColor=white&label=Docker%20Hub&color=2496ED)](https://hub.docker.com/r/shellharbor/watchdog)
 [![CodeQL](https://github.com/shellharbor/watchdog/actions/workflows/codeql.yml/badge.svg)](https://github.com/shellharbor/watchdog/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/shellharbor/watchdog/badge)](https://scorecard.dev/viewer/?uri=github.com/shellharbor/watchdog)
 [![GitHub release](https://img.shields.io/github/v/release/shellharbor/watchdog)](https://github.com/shellharbor/watchdog/releases)
@@ -30,6 +32,8 @@ For task-oriented guides and additional runnable examples, see the
 - [Support guide](SUPPORT.md) — documentation, issues, and safe troubleshooting
 - [Release guide](RELEASING.md) — verified version and release workflow
 - [Changelog](CHANGELOG.md) — user-visible release history
+- [OpenSSF Scorecard audit](docs/scorecard-audit.md) — verified findings, CI hardening, and remaining maintainer actions
+- [Fuzzing and release signatures](docs/fuzzing-and-release-signatures.md) — mutation targets, crash replay, and verification before installation
 
 ## Features
 
@@ -44,12 +48,14 @@ For task-oriented guides and additional runnable examples, see the
 - Per-service action cooldown
 - Optional persistent flapping guard and exponential action backoff
 - Dependency-ordered checks and separate liveness/readiness endpoints
-- Bounded incident history, expanded Prometheus textfile metrics, and opt-in action allowlist
+- Bounded incident history, Prometheus textfile metrics with scheduler heartbeat, and opt-in action allowlist
+- Ready Grafana dashboard and Prometheus/Alertmanager observability assets
 - Optional per-check history, uptime reports, ASCII trends, and static observed-availability bars
 - Optional health verification after remediation
 - Failure and recovery hooks with environment variables
 - Built-in SMTP email alerts with YAML-configured templates and recipients
 - Telegram, Discord, Slack, ntfy, PagerDuty, and Opsgenie alerts
+- Per-service notification routing, severity, and runbook context
 - Persistent state and transition-only hooks
 - Global non-blocking lock to prevent overlapping runs
 - In-memory YAML lookup cache to avoid repeated parser processes during each run
@@ -82,14 +88,14 @@ yq --version  # Must report Mike Farah yq version v4.x.x
 
 ## Quick start
 
-Download the stable `v1.7.2` source archive from GitHub:
+Download the stable `v1.7.9` source archive from GitHub:
 
 ```bash
 curl -fL \
-  https://github.com/shellharbor/watchdog/archive/refs/tags/v1.7.2.zip \
+  https://github.com/shellharbor/watchdog/archive/refs/tags/v1.7.9.zip \
   -o watchdog.zip
 unzip watchdog.zip
-cd watchdog-1.7.2
+cd watchdog-1.7.9
 ```
 
 Alternatively, clone the repository with Git:
@@ -114,6 +120,219 @@ sudo /opt/service-watchdog/service-watchdog.sh
 Or run `sudo ./install.sh` to verify dependencies, install the script and
 example configuration, create runtime directories, install the systemd units,
 and reload systemd. The installer preserves an existing configuration.
+
+## Run Watchdog with Python / pip
+
+The optional **`shellharbor-watchdog`** Python distribution runs the same Bash
+engine, not a rewritten monitor. It requires Python 3.11+ on Linux (including
+WSL), Bash 4.3+, Mike Farah yq v4, curl, flock, and GNU coreutils. Native
+installation, systemd, Docker, and Kubernetes do not gain a Python dependency.
+
+Install from this checkout before its first PyPI publication:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/python -m shellharbor_watchdog --version
+.venv/bin/python -m shellharbor_watchdog validate -c /etc/watchdog/config.yaml
+.venv/bin/shellharbor-watchdog status -c /etc/watchdog/config.yaml --json
+.venv/bin/shellharbor-watchdog-discover --help
+```
+
+After publication, replace `pip install .` with
+`pip install shellharbor-watchdog`. Do **not** install the unrelated `watchdog`
+filesystem-event package. This repository's package is not published by
+building it locally or creating a GitHub release.
+
+The Python launchers forward the existing CLI arguments literally and replace
+themselves with Bash, retaining signals, standard streams, and exit codes
+`0` / `1` / `2`. Set `WATCHDOG_CONFIG` or pass `-c`; otherwise they look for
+`config.yaml` in the caller's current directory. They never write configuration
+or state into the installed package, install OS dependencies, or create a timer.
+Use an explicit config and absolute launcher path in a scheduler.
+
+See the [Python package guide](wiki/Python-Package.md) for installation,
+examples, tests, and manual TestPyPI/PyPI Trusted Publishing. A safe first
+configuration is available in [`examples/python-package.yaml`](examples/python-package.yaml).
+
+## Run Watchdog in Docker
+
+Docker is an additional deployment option, not a replacement for the native
+single-file, cron, or systemd installation. The production image is built from
+[`packaging/docker/Dockerfile`](packaging/docker/Dockerfile); the root
+[`Dockerfile`](Dockerfile) belongs only to the GitHub Marketplace validation
+Action described below.
+
+Release images are published to GitHub Container Registry as
+`ghcr.io/shellharbor/watchdog`. The official Docker Hub mirror is
+[`shellharbor/watchdog`](https://hub.docker.com/r/shellharbor/watchdog).
+Pin a complete release tag in production:
+
+```bash
+docker pull ghcr.io/shellharbor/watchdog:<version>
+# Or pull the same image from Docker Hub.
+docker pull shellharbor/watchdog:<version>
+docker build --file packaging/docker/Dockerfile --target runtime \
+  --tag watchdog:local .
+```
+
+The container is a one-shot job. Its exit code is the monitoring result: `0`
+means the selected targets were healthy, `1` represents an unavailable target
+or attempted remediation, and `2` is a Watchdog configuration or runtime
+error. It does not run a scheduler or background daemon. Schedule
+`docker compose run --rm watchdog` with the host scheduler if a container-only
+deployment is desired.
+
+Start with the supplied configuration and Compose files:
+
+```bash
+cp packaging/docker/config.example.yaml config.yaml
+mkdir -p state
+# On a Linux host, give the non-root image user write access to persisted data.
+sudo chown -R 10001:10001 state
+
+# Replace the illustrative URL in config.yaml, then validate without checks.
+docker compose -f docker-compose.example.yml run --rm watchdog validate
+
+# Run one monitoring cycle.
+docker compose -f docker-compose.example.yml run --rm watchdog
+```
+
+The Compose example mounts only a read-only configuration file and a writable
+`./state` volume. Its example configuration keeps state and the operational log
+under `/var/lib/watchdog`; enable history, metrics, or a generated status page
+only on paths mounted deliberately for those outputs. The container root
+filesystem is read-only, it runs as UID/GID `10001`, drops all Linux
+capabilities, uses `no-new-privileges`, and has a small writable `/tmp` tmpfs.
+It does not use privileged mode, host networking, host filesystem mounts, or a
+Docker socket by default.
+
+Container checks observe the container network and only the filesystems that
+you mount. In particular, a disk check does not report host disk capacity
+unless the relevant host filesystem is explicitly mounted read-only, and a
+`127.0.0.1` target means the Watchdog container itself—not the host. Host
+`systemctl` commands are unavailable; Docker CLI remediation requires the
+separate socket profile below. A ClamAV check also needs a deliberate readable
+scan path and current virus definitions; they are not baked into the image.
+
+Keep notification credentials outside YAML and the image. For an ad-hoc run,
+use a protected environment file containing only the variables named by the
+configuration's `*_env` fields:
+
+```bash
+docker run --rm \
+  --env-file /etc/watchdog/notification.env \
+  --volume "$PWD/config.yaml:/etc/watchdog/config.yaml:ro" \
+  --volume "$PWD/state:/var/lib/watchdog" \
+  ghcr.io/shellharbor/watchdog:<version> notify-test --channel all
+```
+
+For Compose scheduling, add the same protected file through a local,
+uncommitted Compose override (`env_file:`), or inject those variables through
+the host scheduler's secret mechanism. Never pass a token or password as an
+image build argument, label, command argument, or committed YAML value.
+
+### Docker scheduling, health, and lifecycle
+
+A host cron entry can trigger the job every minute without keeping a monitor
+daemon alive:
+
+```cron
+* * * * * cd /srv/watchdog && /usr/bin/docker compose -f docker-compose.example.yml run --rm --no-deps watchdog
+```
+
+The image health check runs `validate` against the mounted configuration. It
+confirms that the Watchdog binary, configuration, and required dependencies are
+usable, but deliberately **does not** indicate whether the monitored services
+are healthy. Use the exit code from each scheduled run and Watchdog's alerts,
+metrics, and status command for target health.
+
+`ENTRYPOINT` forwards stop signals through Watchdog and its check subprocesses, then
+waits for the normal cleanup trap so `docker stop` retains Watchdog's exit-code
+contract.
+The container contract for a future external scheduler or agent is intentionally
+small: mount a readable config at `/etc/watchdog/config.yaml` (or set
+`WATCHDOG_CONFIG`), mount the required output paths, supply secrets as
+environment variables, invoke a single command, and consume its exit code.
+
+### Optional Docker remediation
+
+The default image intentionally does not include the Docker CLI and the default
+Compose service never mounts `/var/run/docker.sock`. If—and only if—configured
+remediation commands need to control the host Docker daemon, use the separate
+`-docker` image and explicit profile:
+
+```bash
+export WATCHDOG_DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+docker compose -f docker-compose.example.yml \
+  --profile docker-actions run --rm watchdog-docker-actions
+```
+
+Give that profile a dedicated, reviewed config such as `config-docker.yaml`.
+Docker socket access effectively grants control of the host Docker daemon and
+can lead to host-level compromise; it is not made safe by running the container
+as a non-root UID. Prefer remote HTTP remediation or narrowly scoped host
+automation when possible.
+
+### Image publication and tags
+
+The `Publish Watchdog container images` workflow runs for a published GitHub
+Release, or manually for an existing release tag that already contains this
+distribution after it verifies that the tag matches [`VERSION`](VERSION). It
+publishes multi-platform (`linux/amd64` and `linux/arm64`) images to GHCR with
+full, minor, and major semantic-version tags.
+`latest` (and `latest-docker`) is updated only for a release that GitHub does
+not mark as a prerelease. The Docker-enabled variant uses the same tags with a
+`-docker` suffix.
+
+The workflow adds OCI source/version/revision labels and attaches BuildKit
+provenance and an SBOM. Docker Hub is optional: set repository secrets
+`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` to publish the same tags under
+`docker.io/<username>/watchdog`; without both secrets its job is skipped while
+GHCR publication continues. Make the first GHCR package public in GitHub's
+package settings if it should be anonymously pullable.
+
+## Run Watchdog in Kubernetes
+
+Watchdog is a finite monitoring cycle, so Kubernetes support uses a Helm 3
+`CronJob` rather than a long-running Deployment. The chart supports Kubernetes
+1.31+ and starts with its schedule suspended. It creates a ConfigMap from the
+same Watchdog YAML, mounts persistent state by default, and runs the existing
+non-root production image. A Job's completion and its `0`/`1`/`2` exit code are
+the health signals; Kubernetes does not use the image's Docker `HEALTHCHECK`.
+
+Install it in the namespace that owns the state PVC. Copy the safe starting
+values, replace the endpoint, choose storage, and validate before enabling the
+schedule:
+
+```bash
+cp examples/kubernetes/values.yaml values.yaml
+helm lint charts/watchdog --strict -f values.yaml
+helm upgrade --install watchdog ./charts/watchdog -n monitoring -f values.yaml \
+  --set manual.enabled=true
+
+# The optional Job runs `validate` with the mounted configuration.
+kubectl -n monitoring wait --for=condition=complete job/watchdog-watchdog-validate --timeout=10m
+kubectl -n monitoring logs job/watchdog-watchdog-validate
+```
+
+Disable `manual.enabled` after the completed Job, run one actual CronJob-derived
+cycle, then set `schedule.suspend: false` only after that cycle succeeds.
+Persistent state is important: it retains failure/recovery transitions and the
+existing lock between CronJob Pods. The chart creates a retained state PVC by
+default; set `state.existingClaim` to use an operator-owned PVC, or disable
+persistence only when losing transition continuity is acceptable. Production
+deployments should pin `image.digest` after verifying the desired published
+image.
+
+The chart never creates Kubernetes Secrets. Use the normal Watchdog `*_env`
+fields in `config`, create a Secret outside Helm, then set `envFromSecret` to
+its name. It creates no RBAC resources, disables service-account token mounts,
+and permits no host paths, host networking, privileged containers, Docker
+socket, or Docker CLI profile. It cannot execute host `systemctl` or Docker
+remediation; prefer remote HTTP remediation or Kubernetes-native automation.
+See the [Kubernetes deployment guide](wiki/Kubernetes-Deployment.md) for the
+full storage, Secret, scheduling, upgrade, and rollback procedure.
 
 ## Validate configuration in GitHub Actions
 
@@ -152,6 +371,14 @@ from the same directory as `service-watchdog.sh`; install or copy both files
 together. The `Release metadata` GitHub Actions workflow verifies that a pushed
 `vX.Y.Z` tag, `VERSION`, `--version`, the stable source archive in this README,
 and the matching changelog entry agree.
+
+Before creating a release tag, run the same check locally with the intended
+tag. It fails with a specific mismatch instead of leaving GitHub Actions to
+discover it after publication:
+
+```bash
+bash ./scripts/release-preflight.sh vX.Y.Z
+```
 
 To test the development branch instead, clone the repository as shown above or
 download [`main.zip`](https://github.com/shellharbor/watchdog/archive/refs/heads/main.zip).
@@ -280,7 +507,13 @@ literal `value`: Watchdog validates the variable name, reads it only at request
 time, and never writes its value to logs, state, metrics, history, or the status
 page. `expect.content_type` compares a response media type while ignoring its
 parameters; `expect.body_regex` requires an extended-regex match in a temporary
-response capture limited to 64 KiB. Neither exposes response content in logs.
+response capture limited to 64 KiB. `expect.json` can also assert selected
+JSON scalars without exposing response content in logs. Its paths are
+deliberately limited to `$`, `.field`, and zero-based `[index]` segments—no
+wildcards, filters, recursive descent, or expressions. Each of up to 20
+assertions uses exactly one of `equals` (a string, number, or boolean with its
+JSON type) or `regex` (an extended regular expression for a string). The body
+must be valid JSON and a missing or `null` value fails the check.
 
 ```yaml
 services:
@@ -295,15 +528,54 @@ services:
           value_env: WATCHDOG_API_TOKEN
       expect:
         content_type: application/json
-        body_regex: '"status"[[:space:]]*:[[:space:]]*"ok"'
+        json:
+          - path: $.status
+            equals: ok
+          - path: $.ready
+            equals: true
+          - path: $.release.version
+            regex: '^v[0-9]+\\.[0-9]+\\.[0-9]+$'
         max_total_ms: 800
 ```
+
+HTTP checks can use a private CA, mutual TLS client credentials, and an
+HTTP(S) proxy. TLS hostname and certificate verification remain enabled; do
+not work around an internal CA with insecure verification. Certificate and key
+paths must be absolute, regular, readable files. A client certificate and its
+key must be configured together. Encrypted private keys are not supported:
+keep an unencrypted key readable only by the Watchdog account rather than
+passing a passphrase through a process command line.
+
+```yaml
+services:
+  - name: private-api
+    check:
+      type: http
+      url: https://api.internal.example/health
+      tls:
+        ca_cert_file: /etc/watchdog/pki/internal-ca.pem
+        client_cert_file: /etc/watchdog/pki/watchdog-client.crt
+        client_key_file: /etc/watchdog/pki/watchdog-client.key
+      proxy:
+        url: http://proxy.internal.example:8080
+        username_env: WATCHDOG_PROXY_USERNAME
+        password_env: WATCHDOG_PROXY_PASSWORD
+```
+
+`proxy.url` must be an HTTP(S) URL without embedded credentials. Keep proxy
+credentials in the paired `*_env` fields: Watchdog passes them through a
+private mode-`0600` curl config file, never through curl argv, logs, state,
+metrics, history, or the status page. The same transport fields work in
+`health.liveness` and `health.readiness`. See
+[`examples/http-mtls-proxy.yaml`](examples/http-mtls-proxy.yaml).
 
 If an accepted response takes longer than `max_total_ms`, Watchdog records the
 service as `degraded`, sends the usual transition notification, and exports its
 latency metrics. It intentionally does **not** run remediation, affect circuit
 breakers/backoff/flapping protection, or increment unavailable counters. An
-unexpected content type or body mismatch remains an ordinary failed check.
+unexpected content type, body, or JSON assertion remains an ordinary failed
+check. JSON assertions parse the same bounded private response capture as
+`body_regex`; neither the response body nor the compared value is logged.
 See [`examples/smart-http.yaml`](examples/smart-http.yaml) for a complete,
 safe-to-adapt configuration.
 
@@ -834,7 +1106,7 @@ as the request body with `Title: watchdog` and the configured priority.
 
 Supported variables are the same as email templates: `{{service}}`, `{{event}}`,
 `{{timestamp}}`, `{{check_type}}`, `{{detail}}`, `{{http_status}}`,
-`{{check_exit}}`, and `{{action_status}}`.
+`{{check_exit}}`, `{{action_status}}`, `{{severity}}`, and `{{runbook_url}}`.
 
 Run `service-watchdog.sh -n` after setting the relevant environment variables:
 dry-run validates enabled webhook configuration and that each configured secret
@@ -868,6 +1140,35 @@ Both credentials are read from the environment, stored only in private
 temporary curl files during delivery, and never logged. `notify-test` supports
 both provider names as `--channel pagerduty` and `--channel opsgenie`.
 See [`examples/oncall-notifications.yaml`](examples/oncall-notifications.yaml).
+
+#### Per-service notification routing, severity, and runbooks
+
+Channels remain globally configured, but a service can opt into a smaller
+delivery set with `notify.channels`. Omitting `notify.channels` preserves the
+original behavior: every globally enabled channel receives the service event.
+`severity` is available to email and webhook templates as `{{severity}}`; it
+also becomes the PagerDuty Events API severity and maps to Opsgenie priorities
+`critical` → `P1`, `error` → `P2`, `warning` → `P3`, and `info` → `P5`.
+Without an explicit severity, Watchdog retains its prior defaults of `error`
+for a failure and `critical` for an escalation; recovery template context is
+`info`.
+
+```yaml
+services:
+  - name: payments-api
+    check: {type: http, url: https://payments.example.com/health}
+    notify:
+      channels: [telegram, pagerduty, opsgenie]
+      severity: critical
+      runbook_url: https://runbooks.example.com/payments-api
+```
+
+`runbook_url` must be a non-secret HTTP(S) URL. It is available as
+`{{runbook_url}}` in templates and is included in PagerDuty and Opsgenie
+trigger payloads. Do not place credentials or secret query parameters in a
+runbook URL. See
+[`examples/notification-routing.yaml`](examples/notification-routing.yaml) for
+a complete configuration.
 
 ### Maintenance Windows
 
@@ -963,6 +1264,8 @@ metrics:
   static_labels:
     instance: prod-web-01
     datacenter: msk-1
+  heartbeat:
+    enabled: true
 ```
 
 Configure node_exporter to collect the directory:
@@ -983,6 +1286,27 @@ backoff time remaining. HTTP services also export
 and optional static labels; incident IDs, command output, response bodies, and
 secrets are not labels. For example, alert when
 `watchdog_service_state{service="api"} == 1`.
+
+`metrics.heartbeat.enabled` additionally emits
+`<prefix>_heartbeat_timestamp_seconds` with **only** the configured static
+labels. It records the time at which Watchdog completed a full ordinary monitor
+run, even if a service is unhealthy, so it detects a missing timer/cron run
+rather than a service incident. It is deliberately omitted for `validate`,
+`status`, reports, `notify-test`, `--dry-run`, configuration/runtime failures,
+and the first manual `-s SERVICE` partial run. After a full run establishes a
+heartbeat, a partial run re-exports the previous timestamp without refreshing
+it; it therefore cannot make the scheduler look healthy.
+
+Ready-to-import observability assets are included in
+[`observability/`](observability): a Grafana overview dashboard, Prometheus
+alert rules for stale heartbeat/unavailable/degraded services, and an
+Alertmanager routing snippet. Import the dashboard, load the rules through
+Prometheus, then set the heartbeat threshold to at least twice the interval of
+your systemd timer or cron job. The bundled queries use the default
+`prefix: watchdog`; replace `watchdog_` in the assets if you set another prefix.
+The worked
+[`prometheus-heartbeat.yaml`](examples/prometheus-heartbeat.yaml) example uses
+the same layout.
 
 ```text
 watchdog → watchdog.prom → node_exporter → Prometheus → Grafana
@@ -1391,8 +1715,10 @@ bash ./service-watchdog.sh notify-test -c ./config.yaml --channel telegram --eve
 
 The defaults are `--channel all` and `--event failure`; `escalation` is also
 supported. With `-s`, the selected service supplies its name and check type.
-Notification templates are currently global, not routed per service. Without
-`-s`, the synthetic name is `watchdog-test`. The message uses the detail
+With `-s`, its `notify.channels` routing is also applied; globally enabled but
+unrouted channels are reported as `skipped | not routed`. Without `-s`, the
+synthetic name is `watchdog-test` and all globally enabled channels remain
+eligible. The message uses the detail
 `This is a test notification from watchdog`, a `test-<unix>` incident ID,
 `n/a` for check status/exit, and `not-required` for action status. Subjects
 and message text start with `[TEST]`.
@@ -1690,6 +2016,57 @@ enforce after reviewing actions.
 
 ## Testing
 
+The Python launcher has dependency-free unit tests. The **Python package**
+workflow runs them on Python 3.11 and 3.12, then builds and checks both wheel
+and sdist on Linux / Python 3.12:
+
+```bash
+python3 tests/python_launcher.py
+python3 -m venv .venv-package
+.venv-package/bin/python -m pip install --require-hashes --only-binary=:all: \
+  -r .github/requirements-packaging.txt
+.venv-package/bin/python -m build --no-isolation
+.venv-package/bin/python -m twine check --strict dist/*
+.venv-package/bin/python tests/python_package.py
+```
+
+The install tests use isolated virtual environments, rebuild the wheel from
+the standalone sdist, compare bundled files with the repository, and exercise
+actual validation/checks, default config lookup, literal argv, signals, and
+exit codes without requiring PyPI access. They need the ordinary Linux runtime
+dependencies. The packaging lock is CI-only and does not add Python runtime
+dependencies to the package.
+
+CI-only Python dependencies are version- and hash-locked in
+[`.github/requirements-ci.txt`](.github/requirements-ci.txt) for CPython 3.12
+on Linux x86_64. Install them in an isolated environment before Python tests:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --require-hashes --only-binary=:all: -r .github/requirements-ci.txt
+.venv/bin/python tests/supply_chain.py
+```
+
+The supply-chain test runs in CI alongside the authoritative Bash suite. It
+protects immutable dependency references, job token permissions, checkout
+credentials, and checksum failure behavior. See the
+[Scorecard audit](docs/scorecard-audit.md) for the public report and its limits.
+
+The separate `Fuzzing` workflow runs genuine ClusterFuzzLite/Atheris mutations
+against configuration validation and JSON/HTML/Prometheus string handling.
+Deterministic seeds and release boundary checks run in ordinary CI:
+
+```bash
+python3 tests/fuzzing.py
+python3 tests/release_artifacts.py
+python3 tests/cosign_offline.py # Requires Cosign 3.1.3; disposable keys only.
+```
+
+New releases that include the signing workflow upload a deterministic source
+archive, checksums, and keyless Sigstore bundles. Verify their exact GitHub
+workflow/tag identity before installing; see the
+[fuzzing and signature guide](docs/fuzzing-and-release-signatures.md).
+
 ```bash
 bash ./scripts/build-watchdog.sh --check
 bash -n service-watchdog.sh watchdog-discover.sh install.sh scripts/build-watchdog.sh lib/watchdog/*.sh tests/*.sh
@@ -1697,9 +2074,13 @@ bash -n scripts/github-action-entrypoint.sh
 shellcheck service-watchdog.sh watchdog-discover.sh install.sh scripts/build-watchdog.sh scripts/github-action-entrypoint.sh tests/*.sh
 bash ./tests/versioning.sh
 bash ./tests/run-all.sh
+# With Helm 3, kind, kubectl, and PyYAML available:
+helm lint charts/watchdog --strict
+python3 ./tests/kubernetes_chart.py
+python3 ./tests/kubernetes_integration.py
 ```
 
-`tests/run-all.sh` is the authoritative regression inventory. It fails if a
+`tests/run-all.sh` is the authoritative Bash regression inventory. It fails if a
 new test script is not registered, then runs every listed scenario in a
 deterministic order. GitHub Actions runs this same suite on pushes and pull
 requests. The schema test requires Mike Farah `yq` v4 and Python's `jsonschema`
@@ -1714,6 +2095,9 @@ of certificate data in operational logs.
 `yq` parser invocations used for configuration reads.
 `tests/build.sh` checks that the generated distribution is current and exactly
 matches a fresh build from the source modules.
+The separate **Kubernetes** workflow verifies the chart and production image
+inside an isolated kind cluster; it never reads a maintainer kubeconfig or
+touches an external cluster.
 
 ## License
 

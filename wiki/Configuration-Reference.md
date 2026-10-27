@@ -111,6 +111,85 @@ services:
 Templates cannot inherit from other templates. They may omit fields because
 they are completed when a service references them.
 
+## HTTP JSON assertions
+
+Use `check.expect.json` when a successful HTTP response must contain a small
+set of known JSON fields. The body is captured only for assertions, bounded to
+64 KiB, parsed as JSON, and deleted without being logged.
+
+```yaml
+services:
+  - name: catalog-api
+    check:
+      type: http
+      url: https://catalog.example.com/health
+      expect:
+        json:
+          - path: $.status
+            equals: ok
+          - path: $.dependencies.database.ready
+            equals: true
+          - path: $.release.version
+            regex: '^v[0-9]+\\.[0-9]+\\.[0-9]+$'
+```
+
+Paths allow only the root `$`, `.field` properties, and zero-based `[index]`
+segments. Wildcards, filters, recursive descent, and expressions are not
+supported. Each list has 1–20 assertions, and every assertion uses exactly one
+of `equals` (a string, number, or boolean matched with its JSON type) or
+`regex` (an extended regular expression applied only to a string). Missing or
+`null` values fail the check.
+
+## HTTP transport: mTLS and proxy
+
+Use `check.tls` to supply a private CA and mTLS client material, and
+`check.proxy` for a per-check HTTP(S) proxy. These maps deep-merge through HTTP
+templates and are also supported in liveness/readiness checks.
+
+```yaml
+check:
+  type: http
+  url: https://catalog.internal.example/health
+  tls:
+    ca_cert_file: /etc/watchdog/pki/internal-ca.pem
+    client_cert_file: /etc/watchdog/pki/watchdog-client.crt
+    client_key_file: /etc/watchdog/pki/watchdog-client.key
+  proxy:
+    url: http://proxy.internal.example:8080
+    username_env: WATCHDOG_PROXY_USERNAME
+    password_env: WATCHDOG_PROXY_PASSWORD
+```
+
+All three certificate fields are optional, but `client_cert_file` and
+`client_key_file` are a pair. Paths must be absolute readable regular files.
+Encrypted private keys are not supported; protect an unencrypted key with
+filesystem permissions instead of providing a passphrase.
+`proxy.url` must not embed credentials; proxy username and password are an
+optional pair of environment-variable names. Watchdog stores those credentials
+only in a temporary mode-`0600` curl config file. `validate` checks the paths,
+field pairs, and URL before any health check runs.
+
+## Service notification routing
+
+The top-level `notifications` section enables delivery providers. A service
+may then selectively route its own events and attach operational context:
+
+```yaml
+services:
+  - name: orders-api
+    check: {type: http, url: https://orders.example.com/health}
+    notify:
+      channels: [email, pagerduty]
+      severity: error
+      runbook_url: https://runbooks.example.com/orders-api
+```
+
+`channels` is optional; without it, all globally enabled channels are used.
+The supported values are `email`, `telegram`, `discord`, `slack`, `ntfy`,
+`pagerduty`, and `opsgenie`. `severity` is one of `info`, `warning`, `error`,
+or `critical`. `runbook_url` is an HTTP(S) URL and must not contain secrets.
+These fields merge normally through service templates.
+
 ## Conditional checks (`only_if`)
 
 All configured conditions must pass before the service is checked. A failed

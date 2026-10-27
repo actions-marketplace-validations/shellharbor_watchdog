@@ -103,6 +103,10 @@ metrics:
   static_labels:
     instance: prod-web-01
     datacenter: msk-1
+  # Scheduler liveness only: emits watchdog_heartbeat_timestamp_seconds after
+  # a complete normal run, never after --dry-run or a targeted -s run.
+  heartbeat:
+    enabled: false
 
 # Optional self-hosted static status page.
 status_page:
@@ -282,9 +286,24 @@ templates:
       # headers:
       #   - name: Authorization
       #     value_env: WATCHDOG_API_TOKEN
+      # Private CA/client certificates and an authenticated HTTP(S) proxy are
+      # opt-in. Keep client keys root-owned and proxy credentials in env vars.
+      # tls:
+      #   ca_cert_file: /etc/watchdog/pki/internal-ca.pem
+      #   client_cert_file: /etc/watchdog/pki/watchdog-client.crt
+      #   client_key_file: /etc/watchdog/pki/watchdog-client.key
+      # proxy:
+      #   url: http://proxy.internal.example:8080
+      #   username_env: WATCHDOG_PROXY_USERNAME
+      #   password_env: WATCHDOG_PROXY_PASSWORD
       # expect:
       #   content_type: application/json
       #   body_regex: '"status"[[:space:]]*:[[:space:]]*"ok"'
+      #   json:
+      #     - path: $.status
+      #       equals: ok
+      #     - path: $.ready
+      #       equals: true
       #   max_total_ms: 800  # Reports degraded and never remediates.
     actions:
       cooldown: 300
@@ -404,6 +423,14 @@ services:
       hold_seconds: 600
       recovery_seconds: 120
       notify: true
+
+    # Restrict this service to selected globally enabled channels. Omit
+    # channels to retain delivery through every enabled channel. severity and
+    # runbook_url can be rendered in templates and enrich on-call alerts.
+    notify:
+      channels: [email, pagerduty, opsgenie]
+      severity: critical
+      runbook_url: https://runbooks.example.com/example-website
 
     # Checks continue during these periods, while remediation, email, webhooks,
     # and hooks are suppressed. Windows must start and end on the same day.

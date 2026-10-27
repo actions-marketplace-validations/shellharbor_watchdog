@@ -17,6 +17,15 @@ projects.
   it with `scripts/build-watchdog.sh --check`. The released/installed script
   remains self-contained and never sources modules at runtime.
   `watchdog-discover.sh` is a separate offline generator.
+- `shellharbor-watchdog` is the optional Python 3.11+ distribution, implemented
+  under `src/shellharbor_watchdog/` with `pyproject.toml`. Keep it Linux-only,
+  dependency-free at Python runtime, and a literal-argv `execve` launcher for
+  the bundled monitor/discovery scripts. Never replace it with a downloaded
+  script, shell command string, extra supervisor, or automatic OS installer.
+  Bundle original files and read the version from root `VERSION`; do not keep
+  a second tracked runtime copy. Python launchers use the caller's `config.yaml`
+  unless `WATCHDOG_CONFIG` or `-c` selects another file; never write operational
+  files into site-packages. Native/container users still do not require Python.
 - Preserve exit codes: `0` healthy/no remediation, `1` unavailable or a
   remediation attempt, and `2` configuration or runtime error.
 - Keep new behavior opt-in. Do not change existing state-file names or format,
@@ -30,6 +39,18 @@ projects.
 - An HTTP `expect.max_total_ms` breach is a `degraded` latency signal: preserve
   its transition alert and metrics, but never route it into remediation,
   circuit-breaker, backoff, flapping, or unavailable-counter handling.
+- HTTP `expect.json` assertions are deliberately constrained: accept only `$`,
+  `.field`, and zero-based `[index]` path segments; at most 20 assertions; and
+  exactly one typed scalar `equals` or string-only ERE `regex` per assertion.
+  Parse the existing 64 KiB private response capture as JSON, fail missing or
+  null paths, and never include a response body or asserted value in details.
+- HTTP `tls` and `proxy` maps are opt-in transport configuration for ordinary
+  HTTP and liveness/readiness checks. Preserve default curl verification; use
+  absolute readable PEM files, require client certificate/key pairs, and reject
+  proxy URLs with embedded credentials. Do not add encrypted-key passphrase
+  support that could expose a secret in argv. Proxy username/password must be paired
+  `*_env` fields and must reach curl only through a private mode-`0600` config
+  file—never argv, logs, state, history, metrics, or status-page output.
 - `tls_cert` is an optional OpenSSL-backed leaf-certificate expiry check. It
   must verify `openssl` only when enabled, pass host and SNI as separate argv
   values, and expose expiry context without logging or persisting certificate
@@ -42,6 +63,10 @@ projects.
   Watchdog incident ID as their deduplication key/alias, trigger on failure or
   escalation, resolve only on recovery, and keep credentials and JSON payloads
   out of logs and curl argv.
+- `services[].notify` can narrow delivery to already globally enabled channels
+  and attach severity/runbook context. Omitting `channels` must preserve
+  all-enabled-channel delivery; severity maps directly to PagerDuty and to the
+  documented Opsgenie priority, and runbook URLs must remain non-secret.
 - `actions.http` is first-class remote remediation, not a shell escape hatch.
   It shares all ordinary remediation guards and in enforce mode must match an
   exact `security.remediation_policy.allowed_http` method/URL entry. Header and
@@ -51,9 +76,46 @@ projects.
   and exit with Watchdog's normal validation status. Keep its image dependencies
   sufficient for every optional check type and cover its valid and invalid
   behavior through `tests/github-action.sh --docker` in CI.
+- `packaging/docker/Dockerfile` is the production one-shot container image;
+  it is intentionally separate from the root Dockerfile used by `action.yml`.
+  Preserve its non-root UID/GID `10001`, default least-privilege contract, and
+  `WATCHDOG_CONFIG` mount interface. The image healthcheck runs only
+  `validate`, never target checks; target health remains the scheduled run's
+  exit status. Its entrypoint must forward stop signals through Watchdog's
+  check process tree, wait for cleanup, and retain Watchdog's exit code. Docker
+  daemon access belongs only in the explicit `-docker` image/profile and must
+  never become a default mount, capability, privilege, or network setting.
+- Every new Dockerfile, Compose service, and microservice container contract
+  must stay Kubernetes-ready: one explicit non-root workload with graceful
+  signal handling; configuration and secrets through environment variables or
+  read-only mounts; only declared persistent storage; portable DNS/URLs; and
+  explicit health/readiness behavior. Never depend on fixed container names,
+  Compose `depends_on`, host networking or paths, privileged mode, or the
+  Docker socket by default. Kubernetes manifests, Helm charts, and an
+  orchestrator dependency are not implied unless the user requests them.
+- Kubernetes deployment is a Helm 3 chart under `charts/watchdog/`, not a
+  controller or a Deployment: Watchdog runs as a finite `CronJob` and optional
+  manual `Job`, and its `0`/`1`/`2` exit status is the health signal. Preserve
+  the suspended-by-default schedule, `Forbid` concurrency policy, persistent
+  transition state, ConfigMap-only configuration, existing-Secret `*_env`
+  injection, and non-root pod contract. The chart must never gain RBAC,
+  service-account token mounting, host paths/networking, privileged access, a
+  Docker socket, or a Docker CLI profile. Keep `tests/kubernetes_chart.py` and
+  `tests/kubernetes_integration.py` aligned with the chart and run them through
+  the isolated kind workflow; the latter must never address a user kubeconfig
+  or cluster.
 - `status_page.uptime` is opt-in and requires `history.enabled: true`. It
   renders only sampled, observed availability from history: preserve grey
   intervals when no record exists and never present the bars as an SLA.
+- `metrics.heartbeat.enabled` is opt-in scheduler liveness, not a service
+  health signal. Emit `<prefix>_heartbeat_timestamp_seconds` only after a
+  complete normal run and only with configured static labels; an unavailable
+  service still refreshes it. Never refresh it for dry runs, read-only
+  commands, configuration/runtime failures, or manual `-s` partial runs.
+  Retain the last full-run timestamp atomically so a partial metrics rewrite
+  exports the old timestamp rather than removing or refreshing the series.
+  Keep the Grafana dashboard and Prometheus/Alertmanager assets under
+  `observability/` synchronized with exported metric names and labels.
 - `--dry-run` may perform checks but must not persist state/history/metrics or
   send notifications, run actions, or run hooks. `validate`, `status`,
   `--report`, and `--trend` must not run checks. `status`, reports, and trends
@@ -97,26 +159,74 @@ must use argv arrays and bounded timeouts.
 
 ## Verification
 
+CI-only Python packages use `.github/requirements-ci.txt` with exact versions
+and SHA-256 wheel hashes for CPython 3.12 / Linux x86_64. Install with
+`--require-hashes --only-binary=:all:` in an isolated environment. Run
+`python3 tests/supply_chain.py` when changing workflows, dependency locks, or
+container bases. Preserve full Action commit pins, checked binary downloads,
+non-persisted checkout credentials, and job-scoped minimum token permissions.
+Scorecard's publishing job is the documented exception requiring read-all at
+workflow level and security-events/id-token write only in its analysis job.
+
+Python distribution builds use `.github/requirements-packaging.txt` on Python
+3.12/Linux x86_64. Keep its Hatchling pin synchronized with `pyproject.toml`.
+Run `python tests/python_launcher.py`, `python -m build --no-isolation`,
+`python -m twine check --strict dist/*`, and `python tests/python_package.py`
+after installing the hash-locked tools. Test installed wheel/sdist behavior,
+not just source imports. The separate package CI also covers Python 3.11.
+`pypi-publish.yml` must remain manual-only and default to TestPyPI: give OIDC
+write only to its environment-protected artifact-only publisher, never the
+build/test job. Do not publish or register a project without user authorization.
+
+`.clusterfuzzlite/` is a genuine CI-only Atheris/libFuzzer integration using a
+digest-pinned official SDK. Its root compiler is a build-only exception, never
+a runtime deployment image. Preserve bounded inputs/deadlines, literal argv,
+validation no-side-effect guards, and JSON/HTML/Prometheus property oracles.
+Run `python3 tests/fuzzing.py` for these boundaries; Bash itself is not claimed
+to have native ASan instrumentation. JSON must escape every non-NUL character
+below U+0020, including uncommon controls.
+
+Release artifacts come only from the resolved Git tag commit, not working-tree
+files. The signing job alone receives contents/id-token write, uses GitHub OIDC,
+and verifies the exact workflow/tag identity plus issuer before uploading.
+Never clobber existing release files or bypass production transparency checks.
+Run `python3 tests/release_artifacts.py` and `python3 tests/cosign_offline.py`
+(Cosign 3.1.3) for release changes. The latter uses disposable local keys only;
+GitHub OIDC is verified by an actual release run, not simulated locally.
+
 Start with the narrowest changed test in `tests/`, then run the relevant
 configuration/schema test and broader regression coverage:
 
 ```bash
 bash ./scripts/build-watchdog.sh --check
-bash -n service-watchdog.sh watchdog-discover.sh install.sh scripts/build-watchdog.sh lib/watchdog/*.sh tests/*.sh
-bash -n scripts/github-action-entrypoint.sh
-shellcheck service-watchdog.sh watchdog-discover.sh install.sh scripts/build-watchdog.sh scripts/github-action-entrypoint.sh tests/*.sh
+bash ./scripts/release-preflight.sh vX.Y.Z # before creating a release tag
+bash -n service-watchdog.sh watchdog-discover.sh install.sh scripts/build-watchdog.sh scripts/release-preflight.sh lib/watchdog/*.sh tests/*.sh
+bash -n scripts/github-action-entrypoint.sh packaging/docker/*.sh
+shellcheck service-watchdog.sh watchdog-discover.sh install.sh scripts/build-watchdog.sh scripts/release-preflight.sh scripts/github-action-entrypoint.sh packaging/docker/*.sh tests/*.sh
 bash ./tests/versioning.sh
 bash ./tests/run-all.sh
+bash ./tests/docker-runtime.sh --docker
+bash ./tests/docker-runtime.sh --docker-socket
+helm lint charts/watchdog --strict
+python3 ./tests/kubernetes_chart.py
+python3 ./tests/kubernetes_integration.py
 ```
 
-`tests/run-all.sh` is the authoritative inventory and rejects unregistered test
+Before creating a release tag, run `scripts/release-preflight.sh` with that
+exact tag. It is the same check used by the release workflow and the versioning
+test, so `VERSION`, generated CLI output, README archive instructions,
+changelog, and installer metadata cannot silently drift apart.
+
+`tests/run-all.sh` is the authoritative Bash inventory and rejects unregistered Bash
 scripts. `tests/build.sh` keeps the generated distribution synchronized with
 the modules. `tests/schema.sh` requires Mike Farah `yq` v4 and Python's
 `jsonschema` package. CI installs ShellCheck, SQLite, yq, and jsonschema, then
 also compiles every Bash source with the official `bash:4.3.48` container to
 protect the documented compatibility floor; do not claim a check ran locally if
-its tool is unavailable. Tests isolate external programs with PATH shims and
-temporary directories—preserve that pattern.
+its tool is unavailable. CI builds the public Docker Action and the production
+runtime image, including the separately opt-in Docker socket test. Tests
+isolate external programs with PATH shims and temporary directories—preserve
+that pattern.
 
 ## Keep this skill current
 
