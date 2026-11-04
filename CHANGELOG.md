@@ -26,6 +26,34 @@ After every task with file changes, briefly record what changed and why: feature
 
 ### Changed
 
+- Synchronized the v1.7.9 publication documentation with current `main` after
+  merged Dependabot updates, preserving dependency/workflow changes and the
+  immutable release tag. Kept the documentation PR separate from unrelated
+  local runtime, installer, and AI-KIT files.
+- Published GitHub release `v1.7.9` from its unchanged existing source tag on
+  2026-11-04, with English release notes covering the tagged changes and Python
+  distribution. The release triggered the existing archive-signing and container
+  workflows without repeating PyPI publication. Both workflows succeeded;
+  independently verified both downloaded signatures with exact identity/issuer
+  checks and matched all four asset digests. Recorded the publication and
+  signed-asset evidence in the Wiki, project navigation, context, and continuity
+  skill so future work does not recreate the release or move its tag.
+- Registered the production PyPI Trusted Publisher for `shellharbor-watchdog`,
+  bound to `shellharbor/watchdog`, `pypi-publish.yml`, and environment `pypi`,
+  after explicit owner confirmation. Published wheel/sdist `1.7.9` through
+  GitHub Actions after owner deployment approval, without an API-token secret
+  or changing the source tag. Verified artifact hashes, publisher-attestation
+  identities, and a clean non-root Linux install/runtime smoke using only the
+  production index. Updated README, Wiki, navigation, and continuity guidance
+  to document the now-available PyPI installation and avoid duplicate uploads.
+- Created the new annotated `v1.7.9` source tag and successfully published its
+  wheel/sdist to TestPyPI through environment-bound GitHub OIDC. Matched both
+  files to CI artifact hashes, checked publish-attestation identities, and
+  verified non-root Linux installation, CLI/module commands, validation, dry-run
+  state behavior, a healthy cycle, and saved-state status. Added a test-index
+  installation example and synchronized project context/skills. Production
+  publication followed separately; no GitHub release or Docker publication
+  was dispatched as part of the Python package uploads.
 - Replaced obsolete required Go check contexts on `main` with the actual Bash
   regression/lint, Python 3.11/3.12 launcher, wheel/sdist installation, and
   GitHub Actions CodeQL checks, bound to the GitHub Actions integration.
@@ -40,7 +68,7 @@ After every task with file changes, briefly record what changed and why: feature
   `main`, with explicit owner approval for production. Clarified the distinction
   between the workflow execution branch and the immutable release-tag input to
   avoid deployment-policy failures. Production publisher registration and
-  distribution uploads remain separate, uncompleted steps.
+  distribution uploads use separate, explicitly authorized steps.
 - Extended dependency-update and supply-chain checks to the Python backend,
   packaging lock, and least-privilege publisher. Added a safe example and Python
   package Wiki guide; synchronized README, release instructions, project skills,
