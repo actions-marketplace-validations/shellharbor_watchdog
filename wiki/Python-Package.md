@@ -16,7 +16,20 @@ scripts at startup, auto-install OS tools, rewrite checks, change state formats,
 create a daemon, or register cron/systemd jobs. Native and container deployments
 still work without Python.
 
-## Install from a checkout before publication
+## Install from PyPI
+
+The published package is available from the ordinary production index:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install shellharbor-watchdog==1.7.9
+.venv/bin/python -m shellharbor_watchdog --version
+```
+
+No TestPyPI or additional index is needed. Install the Linux dependencies listed
+above separately; the package does not install OS tools.
+
+## Install from a checkout
 
 From the repository root on Linux:
 
@@ -31,13 +44,6 @@ python3 -m venv .venv
 The example checks only `true`; validation and the dry run do not write service
 state. For production, replace the example with a reviewed configuration using
 absolute paths owned by the monitoring service account.
-
-After the first PyPI publication, installation by name becomes available:
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install shellharbor-watchdog
-```
 
 For an already built local wheel, no index or Python dependency downloads are
 needed at installation time:
@@ -109,7 +115,8 @@ and bundled metadata. It uploads artifacts for inspection but never to PyPI.
 
 Publication is separate from building, GitHub releases, and container publishing.
 The `Publish Python package` workflow has only a manual trigger and defaults to
-TestPyPI. Nothing has been uploaded merely by adding these files.
+TestPyPI. Adding files, building locally, or creating a GitHub release does not
+upload distributions to either index.
 
 1. Register your PyPI/TestPyPI accounts. The repository's GitHub environments
    `testpypi` and `pypi` allow deployments only from the `main` branch. Production
@@ -144,3 +151,66 @@ actual OIDC publication is verified only by a real authorized run.
 
 See the official [Trusted Publishing guide](https://docs.pypi.org/trusted-publishers/)
 and [pending publisher instructions](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/).
+
+## Verified PyPI publication
+
+Version [1.7.9](https://pypi.org/project/shellharbor-watchdog/1.7.9/) was
+published on 2026-10-23 by
+[GitHub Actions run 39975552350](https://github.com/shellharbor/watchdog/actions/runs/39975552350),
+using the existing immutable `v1.7.9` tag. The owner explicitly confirmed the
+production Trusted Publisher and approved the `pypi` deployment in GitHub.
+The publisher is now active for `shellharbor/watchdog`, `pypi-publish.yml`, and
+environment `pypi`; no API-token secret was created.
+
+The build passed release preflight, launcher/installed-package tests, and strict
+Twine validation. Published wheel/sdist SHA-256 values match both this run's
+artifacts and the TestPyPI trial. PyPI's Integrity API reports the expected
+GitHub repository/workflow/environment in one publish attestation per file.
+This metadata check over HTTPS is not an independent local cryptographic
+verification of the attestations.
+
+A fresh non-root Linux/Python 3.11 container with a read-only root filesystem
+installed `shellharbor-watchdog==1.7.9` only from `https://pypi.org/simple/`,
+without an extra index or Python runtime dependencies. Console/module versions,
+both discovery entrypoints, validation, dry-run state behavior, a healthy cycle,
+and saved-state JSON status passed. Validation created no runtime paths;
+dry-run retained the native operational log/lock but no service state.
+
+Do not rerun the completed upload, overwrite its filenames, or move its tag.
+Future package versions require a new reviewed release tag and a new manually
+approved publication. GitHub releases, Docker images, and release-archive
+signatures remain separate workflows.
+
+[GitHub release v1.7.9](https://github.com/shellharbor/watchdog/releases/tag/v1.7.9)
+was subsequently published on 2026-11-04 from the unchanged source tag. This
+triggered the existing archive-signing and container workflows, not another
+PyPI upload.
+
+## Verified TestPyPI trial
+
+Version [1.7.9](https://test.pypi.org/project/shellharbor-watchdog/1.7.9/) was
+published on 2026-10-23 by the manual
+[GitHub Actions run](https://github.com/shellharbor/watchdog/actions/runs/39956141897).
+Both wheel and source archive match the tested CI artifacts by SHA-256, and
+TestPyPI exposes publish attestations identifying the expected repository,
+workflow, and `testpypi` environment. This is not a production PyPI publication.
+
+Try it on Linux/WSL with the ordinary Watchdog dependencies already installed:
+
+```bash
+python3 -m venv .venv-testpypi
+.venv-testpypi/bin/python -m pip --isolated install \
+  --index-url https://test.pypi.org/simple/ --no-deps --only-binary=:all: \
+  shellharbor-watchdog==1.7.9
+.venv-testpypi/bin/shellharbor-watchdog --version
+.venv-testpypi/bin/python -m shellharbor_watchdog --version
+.venv-testpypi/bin/shellharbor-watchdog-discover --help
+```
+
+No additional index is needed because this package has no Python runtime
+dependencies. A non-root, read-only-root Linux container verified installation,
+validation, a dry run without service state, a healthy cycle, and saved-state
+status. As in the native engine, the dry run retains its operational log/lock;
+`validate` creates no runtime files. TestPyPI data may be pruned: use the
+[test-index guide](https://packaging.python.org/en/latest/guides/using-testpypi/)
+for experimentation, not production deployment.

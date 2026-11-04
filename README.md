@@ -128,21 +128,21 @@ engine, not a rewritten monitor. It requires Python 3.11+ on Linux (including
 WSL), Bash 4.3+, Mike Farah yq v4, curl, flock, and GNU coreutils. Native
 installation, systemd, Docker, and Kubernetes do not gain a Python dependency.
 
-Install from this checkout before its first PyPI publication:
+Install the published [v1.7.9 package from PyPI](https://pypi.org/project/shellharbor-watchdog/1.7.9/):
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install .
+.venv/bin/python -m pip install shellharbor-watchdog==1.7.9
 .venv/bin/python -m shellharbor_watchdog --version
 .venv/bin/python -m shellharbor_watchdog validate -c /etc/watchdog/config.yaml
 .venv/bin/shellharbor-watchdog status -c /etc/watchdog/config.yaml --json
 .venv/bin/shellharbor-watchdog-discover --help
 ```
 
-After publication, replace `pip install .` with
-`pip install shellharbor-watchdog`. Do **not** install the unrelated `watchdog`
-filesystem-event package. This repository's package is not published by
-building it locally or creating a GitHub release.
+For local development, use `pip install .` from this checkout instead. Do
+**not** install the unrelated `watchdog` filesystem-event package. Publication
+uses a separate manually approved GitHub Actions workflow with Trusted
+Publishing; local builds and GitHub releases do not upload to PyPI.
 
 The Python launchers forward the existing CLI arguments literally and replace
 themselves with Bash, retaining signals, standard streams, and exit codes
@@ -154,6 +154,12 @@ Use an explicit config and absolute launcher path in a scheduler.
 See the [Python package guide](wiki/Python-Package.md) for installation,
 examples, tests, and manual TestPyPI/PyPI Trusted Publishing. A safe first
 configuration is available in [`examples/python-package.yaml`](examples/python-package.yaml).
+
+The [verified production publication](wiki/Python-Package.md#verified-pypi-publication)
+includes wheel/sdist hash checks, publisher-attestation identity checks, and
+clean Linux installation/runtime tests. The earlier
+[TestPyPI trial](wiki/Python-Package.md#verified-testpypi-trial) remains separate;
+do not use the test index for production deployment.
 
 ## Run Watchdog in Docker
 
