@@ -92,5 +92,17 @@ Different existing bytes or invalid signatures require maintainer investigation;
 the workflow never uses `--clobber`. Old tags remain unchanged. Docker image
 publication, SBOMs, and BuildKit provenance retain their separate workflow.
 
-The first keyless signature and Scorecard's detection require a real GitHub
-release run. Local crypto tests cannot create or prove a GitHub OIDC identity.
+The first real keyless signing run succeeded on 2026-11-04:
+[run 41762886410](https://github.com/shellharbor/watchdog/actions/runs/41762886410)
+attached all four signed files to
+[release v1.7.9](https://github.com/shellharbor/watchdog/releases/tag/v1.7.9).
+The workflow verified the exact release identity and issuer before uploading.
+Use `version=1.7.9` with the verification commands above for that release.
+The downloaded archive's SHA-256 matches its published `SHA256SUMS`.
+Independent local Cosign 3.1.3 verification of the downloaded archive and
+checksum file also passed, with the exact workflow/tag identity and GitHub
+OIDC issuer enforced. All four downloaded file digests match GitHub metadata.
+
+Scorecard's detection is a separate external observation; it is not established
+by a successful signing run alone. Local disposable-key crypto tests cannot
+create or prove a GitHub OIDC identity.
